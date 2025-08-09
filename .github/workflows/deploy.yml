@@ -6,20 +6,11 @@ on:
   # Adds the green "Run workflow" button in the Actions tab
   workflow_dispatch:
     inputs:
-      app_name:
-        description: "(Optional) Function App name override"
-        required: false
-        type: string
-      branch:
-        description: "Git ref/branch to deploy"
-        required: true
-        default: main
-        type: string
-      use_publish_profile:
-        description: "Force publish-profile deployment (fallback mode)"
-        required: false
-        default: false
-        type: boolean
+      deploy_mode:
+        description: "Choose deployment method"
+        type: choice
+        options: [ oidc, publish_profile ]
+        default: oidc
 
 permissions:
   id-token: write   # required for OIDC
@@ -30,21 +21,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  # ---------------- OIDC (preferred) ----------------
+  deploy_oidc:
+    if: ${{ github.event_name == 'push' || github.event.inputs.deploy_mode == 'oidc' }}
     runs-on: ubuntu-latest
-    env:
-      # Choose app name: manual input wins, else secret
-      APP_NAME: ${{ (github.event_name == 'workflow_dispatch' && inputs.app_name) || secrets.AZURE_FUNCTIONAPP_NAME }}
-      # Choose ref to deploy: manual input wins, else current ref
-      DEPLOY_REF: ${{ (github.event_name == 'workflow_dispatch' && inputs.branch) || github.ref }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.DEPLOY_REF }}
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -53,40 +37,44 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # -------- OIDC path (preferred) --------
       - name: Azure Login (OIDC)
-        if: ${{ !inputs.use_publish_profile && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' }}
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy to Azure Functions (OIDC)
-        if: ${{ !inputs.use_publish_profile && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' }}
+      - name: Deploy to Azure Functions
         uses: Azure/functions-action@v1
         with:
-          app-name: ${{ env.APP_NAME }}
+          app-name: ${{ secrets.AZURE_FUNCTIONAPP_NAME }}
           package: '.'
           scm-do-build-during-deployment: true
           enable-oryx-build: true
           respect-funcignore: true
 
-      # -------- Publish-profile fallback (optional) --------
+  # --------------- Publish Profile (fallback) ---------------
+  deploy_publish_profile:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_mode == 'publish_profile' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps (optional local build)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
       - name: Deploy to Azure Functions (Publish Profile)
-        if: ${{ inputs.use_publish_profile || (secrets.AZURE_CLIENT_ID == '' && secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE != '') }}
         uses: Azure/functions-action@v1
         with:
-          app-name: ${{ env.APP_NAME }}
+          app-name: ${{ secrets.AZURE_FUNCTIONAPP_NAME }}
           publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
           package: '.'
           scm-do-build-during-deployment: true
           enable-oryx-build: true
           respect-funcignore: true
-
-      - name: Fail if no strategy matched
-        if: ${{ (inputs.use_publish_profile && secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE == '') || (!inputs.use_publish_profile && (secrets.AZURE_CLIENT_ID == '' || secrets.AZURE_TENANT_ID == '' || secrets.AZURE_SUBSCRIPTION_ID == '')) }}
-        run: |
-          echo "No valid deploy strategy configured. For OIDC, set AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID."
-          echo "Or run manually with 'use_publish_profile: true' and set AZURE_FUNCTIONAPP_PUBLISH_PROFILE."
-          exit 1
