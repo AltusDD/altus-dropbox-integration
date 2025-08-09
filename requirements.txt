@@ -1,0 +1,8 @@
+azure-functions
+httpx
+python-dotenv
+requests-toolbelt
+# Dropbox SDK
+dropbox
+# Optional; using REST via httpx in code, but you can swap to client usage later
+supabase

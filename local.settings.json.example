@@ -1,0 +1,14 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "DefaultEndpointsProtocol=https;AccountName=<storage>;AccountKey=<key>;EndpointSuffix=core.windows.net",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+
+    "DROPBOX_APP_KEY": "<set-in-azure>",
+    "DROPBOX_APP_SECRET": "<set-in-azure>",
+    "DROPBOX_REFRESH_TOKEN": "<set-in-azure>",
+
+    "SUPABASE_URL": "https://<your-project>.supabase.co",
+    "SUPABASE_SERVICE_ROLE_KEY": "<set-in-azure>"
+  }
+}

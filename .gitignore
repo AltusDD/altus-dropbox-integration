@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.python_packages/
+local.settings.json
+.azure/**
+.env
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
