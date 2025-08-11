@@ -1,4 +1,4 @@
-import json, logging
+import json, logging, dropbox
 import azure.functions as func
 
 from lib.pathmap import (
@@ -14,6 +14,28 @@ def _get_int(d, k):
         return None if v is None else int(v)
     except (TypeError, ValueError):
         return v
+
+
+def _ensure_folder(client: DropboxClient, path: str):
+    """
+    Idempotently ensure a folder exists at `path`.
+    Uses the underlying Dropbox SDK via client.dbx.
+    """
+    try:
+        md = client.dbx.files_get_metadata(path)
+        if isinstance(md, dropbox.files.FolderMetadata):
+            return
+        raise RuntimeError(f"Path exists but is not a folder: {path}")
+    except dropbox.exceptions.ApiError as e:
+        try:
+            if e.error.is_path() and e.error.get_path().is_not_found():
+                client.dbx.files_create_folder_v2(path, autorename=False)
+                return
+        except Exception:
+            pass
+        if "conflict" in str(e).lower():
+            return
+        raise
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
@@ -71,7 +93,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     created = []
     try:
         for p in paths:
-            client.create_folder_if_not_exists(p)
+            _ensure_folder(client, p)
             created.append(p)
     except Exception as e:
         logging.exception("Folder create failed")
