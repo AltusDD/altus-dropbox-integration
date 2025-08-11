@@ -1,28 +1,22 @@
-from __future__ import annotations
 from .naming import slugify
-
 ROOT = "/Altus_Empire_Command_Center"
 
-def property_root(property_name: str, property_id: int) -> str:
-    return f"{ROOT}/01_Properties/{slugify(property_name)}-{property_id}"
+def property_root(name: str, pid: int) -> str:
+    return f"{ROOT}/01_Properties/{slugify(name)}-{pid}"
 
-def unit_root(property_name: str, property_id: int, unit_name: str, unit_id: int) -> str:
-    return f"{property_root(property_name, property_id)}/01_Units/{slugify(unit_name)}-{unit_id}"
+def unit_root(pname: str, pid: int, uname: str, uid: int) -> str:
+    return f"{property_root(pname,pid)}/01_Units/{slugify(uname)}-{uid}"
 
-def lease_root(lease_id: int) -> str:
-    return f"{ROOT}/01_Properties/02_Leases/{lease_id}"  # simple path; most customers prefer under property in practice
-
-def canonical_folder(entity_type: str, meta: dict) -> str:
-    et = entity_type.lower()
-    if et == "propertyphoto":
+def folder_for(entity_type: str, meta: dict) -> str:
+    t = (entity_type or "").lower()
+    if t == "propertyphoto":
         return f"{property_root(meta['property_name'], int(meta['property_id']))}/03_Photos"
-    if et == "unitphoto":
+    if t == "unitphoto":
         return f"{unit_root(meta['property_name'], int(meta['property_id']), meta['unit_name'], int(meta['unit_id']))}/01_Photos"
-    if et == "leasesigned":
+    if t == "leasesigned":
         return f"{property_root(meta['property_name'], int(meta['property_id']))}/02_Leases/{int(meta['lease_id'])}/Signed_Lease_Agreement"
-    if et == "leaseamendment":
+    if t == "leaseamendment":
         return f"{property_root(meta['property_name'], int(meta['property_id']))}/02_Leases/{int(meta['lease_id'])}/Amendments"
-    if et == "leasecorrespondence":
+    if t == "leasecorrespondence":
         return f"{property_root(meta['property_name'], int(meta['property_id']))}/02_Leases/{int(meta['lease_id'])}/Tenant_Correspondence"
-    # default fallback
-    return ROOT
+    return property_root(meta.get('property_name','property'), int(meta.get('property_id',0) or 0))
