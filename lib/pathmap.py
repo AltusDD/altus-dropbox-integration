@@ -1,3 +1,4 @@
+
 from .naming import slugify
 
 ROOT = "Altus_Empire_Command_Center"

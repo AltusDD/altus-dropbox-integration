@@ -1,3 +1,4 @@
+
 import base64, json
 import azure.functions as func
 from lib.dropbox_client import DropboxClient
@@ -10,7 +11,7 @@ def _i(v):
     try: return int(v)
     except Exception: return v
 
-def _prop(meta):  # convenience
+def _prop(meta):
     return property_root(meta.get("owner_name"), _i(meta.get("owner_id")),
                          meta.get("property_name"), _i(meta.get("property_id")))
 
@@ -34,13 +35,12 @@ def _pwo(meta, wo_id):
                                     meta.get("property_name"), _i(meta.get("property_id")),
                                     _i(wo_id))
 
-def _uw o(meta, wo_id):
+def _uwo(meta, wo_id):
     return unit_turnover_work_order_root(meta.get("owner_name"), _i(meta.get("owner_id")),
                                          meta.get("property_name"), _i(meta.get("property_id")),
                                          meta.get("unit_name"), _i(meta.get("unit_id")),
                                          _i(wo_id))
 
-# ---- Dispatcher: add keys here as you grow ----
 def build_folder(entity_type: str, m: dict) -> str:
     et = (entity_type or "").lower()
 
@@ -62,7 +62,7 @@ def build_folder(entity_type: str, m: dict) -> str:
     if et in ("workorderdoc", "workorderphoto", "workorderinvoice"):
         wo_id = m.get("work_order_id")
         if m.get("unit_id"):
-            base = _uw o(m, wo_id)
+            base = _uwo(m, wo_id)
         else:
             base = _pwo(m, wo_id)
         if et == "workorderphoto":   return f"{base}/Photos"
@@ -78,9 +78,9 @@ def build_folder(entity_type: str, m: dict) -> str:
     if et == "leasenotice":         return f"{_lease(m)}/06_Notices"
 
     # Applicants
-    if et == "applicantapplication":   return f"{_applicant(m)}/Application"
-    if et == "applicantscreening":     return f"{_applicant(m)}/Screening"
-    if et == "applicantcorrespondence":return f"{_applicant(m)}/Correspondence"
+    if et == "applicantapplication":    return f"{_applicant(m)}/Application"
+    if et == "applicantscreening":      return f"{_applicant(m)}/Screening"
+    if et == "applicantcorrespondence": return f"{_applicant(m)}/Correspondence"
 
     raise ValueError(f"Unknown entity_type: {entity_type}")
 
@@ -107,5 +107,5 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     client = DropboxClient.from_env()
     md = client.upload_file(folder, original, content)
 
-    out = {"ok": True, "dropbox_path": md.path_display, "name": md.name, "size": getattr(md, "size", None)}
+    out = {"ok": True, "dropbox_path": getattr(md, "path_display", None), "name": getattr(md, "name", original), "size": getattr(md, "size", None)}
     return func.HttpResponse(json.dumps(out), mimetype="application/json")

@@ -1,3 +1,4 @@
+
 import json
 import azure.functions as func
 from lib.pathmap import (
@@ -5,9 +6,9 @@ from lib.pathmap import (
     PROPERTY_CONTAINERS, UNIT_SUBS, LEASE_SUBS, APPLICANT_SUBS,
     property_work_order_root, unit_turnover_work_order_root, WORK_ORDER_SUBS
 )
-from lib.dropbox_client import ensure_folder  # already in your repo
+from lib.dropbox_client import ensure_folder  # must exist in your repo
 
-def _i(v):  # safe int cast
+def _i(v):
     try:
         return int(v)
     except Exception:
@@ -23,8 +24,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     data = body.get("new") or {}
     created = []
 
-    def add(path):
-        ensure_folder(path); created.append(path)
+    def add(path: str):
+        ensure_folder(path)
+        created.append(path)
 
     if et == "owner":
         base = owner_root(data.get("name"), _i(data.get("id")))
@@ -62,7 +64,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             add(f"{base}/{s}")
 
     elif et == "work_order":
-        # If unit info present, nest under Unit → Turnover; else under Property
         if data.get("unit_id"):
             base = unit_turnover_work_order_root(
                 data.get("owner_name"), _i(data.get("owner_id")),
