@@ -22,12 +22,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         with httpx.Client(timeout=20) as c:
             r = c.post(
                 "https://api.dropboxapi.com/oauth2/token",
-                data={
-                    "code": code,
-                    "grant_type": "authorization_code",
-                    "redirect_uri": REDIRECT_URI,  # <- REQUIRED
-                },
-                auth=(app_key, app_secret),
+                data={"code": code, "grant_type": "authorization_code", "redirect_uri": REDIRECT_URI},
+                auth=(app_key, app_secret)
             )
             r.raise_for_status()
             data = r.json()
