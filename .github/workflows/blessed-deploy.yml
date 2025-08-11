@@ -1,31 +1,57 @@
-name: Deploy Python Function App to Azure (OIDC)
+name: Deploy Python Function App to Azure
 
 on:
-  push: { branches: [ "main" ] }
+  push:
+    branches: [ "main" ]
   workflow_dispatch:
 
 permissions:
   id-token: write
   contents: read
 
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/login@v2
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Package ALL Python deps (dropbox, httpx, etc.) into the artifact
+      - name: Install dependencies into .python_packages
+        run: |
+          python -m pip install --upgrade pip
+          rm -rf .python_packages
+          pip install -r requirements.txt --target ".python_packages/lib/site-packages"
+          python - << 'PY'
+import pkgutil, pathlib
+p = pathlib.Path(".python_packages/lib/site-packages").resolve()
+mods = {m.name for m in pkgutil.iter_modules([str(p)])}
+print("✓ packaged 'dropbox' module:", "dropbox" in mods)
+PY
+
+      - name: Login to Azure (OIDC)
+        uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
-      - name: Install deps to package folder
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt -t .python_packages/lib/site-packages
-      - name: Deploy with Functions Action
+
+      - name: Deploy to Azure Functions
         uses: Azure/functions-action@v1
         with:
           app-name: ${{ secrets.AZURE_FUNCTIONAPP_NAME }}
-          package: .
+          package: "."
+          respect-funcignore: false
+          scm-do-build-during-deployment: false
+          enable-oryx-build: false
+          remote-build: false
