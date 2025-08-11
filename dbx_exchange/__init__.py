@@ -2,8 +2,9 @@ import os, json
 import azure.functions as func
 import httpx
 
+REDIRECT_URI = "https://localhost"  # must match your Dropbox app setting
+
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    # Body: {"code":"<auth_code_from_dropbox>"}
     try:
         body = req.get_json()
     except Exception:
@@ -19,9 +20,15 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
     try:
         with httpx.Client(timeout=20) as c:
-            r = c.post("https://api.dropboxapi.com/oauth2/token",
-                       data={"code": code, "grant_type": "authorization_code"},
-                       auth=(app_key, app_secret))
+            r = c.post(
+                "https://api.dropboxapi.com/oauth2/token",
+                data={
+                    "code": code,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": REDIRECT_URI,  # <- REQUIRED
+                },
+                auth=(app_key, app_secret),
+            )
             r.raise_for_status()
             data = r.json()
             out = {
@@ -32,5 +39,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 "note": "Copy 'refresh_token' into Azure App Setting DROPBOX_REFRESH_TOKEN, then Save + Restart. You can delete this function after."
             }
             return func.HttpResponse(json.dumps(out, indent=2), mimetype="application/json")
-    except httpx.HTTPError as e:
+    except httpx.HTTPStatusError as e:
+        return func.HttpResponse(f"Token exchange failed: {e.response.status_code} {e.response.text}", status_code=400)
+    except Exception as e:
         return func.HttpResponse(f"Token exchange failed: {str(e)}", status_code=400)
