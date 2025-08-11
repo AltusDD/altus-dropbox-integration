@@ -1,85 +1,74 @@
-
-import json
-import azure.functions as func
+import json, logging, azure.functions as func
 from lib.pathmap import (
-    owner_root, property_root, unit_root, lease_root, applicant_root,
-    PROPERTY_CONTAINERS, UNIT_SUBS, LEASE_SUBS, APPLICANT_SUBS,
-    property_work_order_root, unit_turnover_work_order_root, WORK_ORDER_SUBS
+    owner_root, OWNER_SUBS,
+    property_root, PROPERTY_SUBS,
+    unit_root, UNIT_SUBS,
+    lease_root, LEASE_SUBS,
+    applicant_root, APPLICANT_SUBS,
+    work_order_root
 )
-from lib.dropbox_client import ensure_folder  # must exist in your repo
+from lib.dropbox_client import DropboxClient
 
-def _i(v):
-    try:
-        return int(v)
-    except Exception:
-        return v
+def _intval(v):
+    try: return int(v)
+    except: return v
+
+def _p(body, k, d=None): 
+    v = body.get(k, d)
+    return v
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
-        body = req.get_json()
-    except Exception:
-        return func.HttpResponse("Send JSON body", status_code=400)
+        payload = req.get_json()
+    except ValueError:
+        return func.HttpResponse("Invalid JSON", status_code=400)
 
-    et = (body.get("entity_type") or "").lower()
-    data = body.get("new") or {}
+    entity_type = payload.get("entity_type")
+    data = payload.get("new", {})
+
+    try:
+        client = DropboxClient.from_env()
+    except Exception as e:
+        logging.exception("Dropbox client init failed")
+        return func.HttpResponse("Server configuration error", status_code=500)
+
     created = []
 
-    def add(path: str):
-        ensure_folder(path)
+    def mk(path, subs=None):
+        client.ensure_folder(path)
         created.append(path)
+        if subs:
+            for s in subs:
+                client.ensure_folder(f"{path}/{s}")
+                created.append(f"{path}/{s}")
 
-    if et == "owner":
-        base = owner_root(data.get("name"), _i(data.get("id")))
-        add(base)
+    if entity_type == "owner":
+        base = owner_root(data.get("name"), _intval(data.get("id")))
+        mk(base, OWNER_SUBS)
 
-    elif et == "property":
-        base = property_root(data.get("owner_name"), _i(data.get("owner_id")),
-                             data.get("name"), _i(data.get("id")))
-        add(base)
-        for c in PROPERTY_CONTAINERS:
-            add(f"{base}/{c}")
+    elif entity_type == "property":
+        base = property_root(data.get("owner_name"), _intval(data.get("owner_id")), data.get("name"), _intval(data.get("id")))
+        mk(base, PROPERTY_SUBS)
 
-    elif et == "unit":
-        base = unit_root(data.get("owner_name"), _i(data.get("owner_id")),
-                         data.get("property_name"), _i(data.get("property_id")),
-                         data.get("name"), _i(data.get("id")))
-        add(base)
-        for s in UNIT_SUBS:
-            add(f"{base}/{s}")
+    elif entity_type == "unit":
+        base = unit_root(data.get("owner_name"), _intval(data.get("owner_id")), data.get("property_name"), _intval(data.get("property_id")), data.get("name"), _intval(data.get("id")))
+        mk(base, UNIT_SUBS)
 
-    elif et == "lease":
-        base = lease_root(data.get("owner_name"), _i(data.get("owner_id")),
-                          data.get("property_name"), _i(data.get("property_id")),
-                          _i(data.get("id")))
-        add(base)
-        for s in LEASE_SUBS:
-            add(f"{base}/{s}")
+    elif entity_type == "lease":
+        base = lease_root(data.get("owner_name"), _intval(data.get("owner_id")), data.get("property_name"), _intval(data.get("property_id")), _intval(data.get("id")))
+        mk(base, LEASE_SUBS)
 
-    elif et == "applicant":
-        base = applicant_root(data.get("owner_name"), _i(data.get("owner_id")),
-                              data.get("property_name"), _i(data.get("property_id")),
-                              _i(data.get("id")), data.get("name"))
-        add(base)
-        for s in APPLICANT_SUBS:
-            add(f"{base}/{s}")
+    elif entity_type == "applicant":
+        base = applicant_root(data.get("owner_name"), _intval(data.get("owner_id")), data.get("property_name"), _intval(data.get("property_id")), data.get("name"), _intval(data.get("id")))
+        mk(base, APPLICANT_SUBS)
 
-    elif et == "work_order":
-        if data.get("unit_id"):
-            base = unit_turnover_work_order_root(
-                data.get("owner_name"), _i(data.get("owner_id")),
-                data.get("property_name"), _i(data.get("property_id")),
-                data.get("unit_name"), _i(data.get("unit_id")),
-                _i(data.get("id"))
-            )
-        else:
-            base = property_work_order_root(
-                data.get("owner_name"), _i(data.get("owner_id")),
-                data.get("property_name"), _i(data.get("property_id")),
-                _i(data.get("id"))
-            )
-        add(base)
-        for s in WORK_ORDER_SUBS:
-            add(f"{base}/{s}")
+    elif entity_type == "work_order":
+        base = work_order_root(
+            data.get("owner_name"), _intval(data.get("owner_id")),
+            data.get("property_name"), _intval(data.get("property_id")),
+            data.get("unit_name"), _intval(data.get("unit_id")), _intval(data.get("id"))
+        )
+        mk(base, ["Photos","Invoices","Docs"])
 
     else:
         return func.HttpResponse("unknown entity_type", status_code=400)

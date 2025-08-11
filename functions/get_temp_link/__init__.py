@@ -1,29 +1,26 @@
-import azure.functions as func
-import os, json, httpx
-from lib.dropbox_client import get_temp_link
-
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-
-def _sb_get_path(asset_id: int) -> str:
-    url = f"{SUPABASE_URL}/rest/v1/file_assets?id=eq.{asset_id}&select=dropbox_path"
-    headers = {
-        "apikey": SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-    }
-    with httpx.Client(timeout=15) as c:
-        r = c.get(url, headers=headers)
-        r.raise_for_status()
-        j = r.json()
-        if not j:
-            raise ValueError("asset not found")
-        return j[0]["dropbox_path"]
+import os, json, azure.functions as func, httpx
+from lib.dropbox_client import DropboxClient
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    try:
-        asset_id = int(req.params.get("id"))
-        path = _sb_get_path(asset_id)
-        link = get_temp_link(path)
-        return func.HttpResponse(json.dumps({"url": link}), mimetype="application/json")
-    except Exception as e:
-        return func.HttpResponse(str(e), status_code=400)
+    path = req.params.get("path")
+    asset_id = req.params.get("id")
+    link = None
+    client = DropboxClient.from_env()
+
+    if path:
+        link = client.temp_link(path)
+    elif asset_id:
+        # best-effort Supabase lookup
+        url = os.getenv("SUPABASE_URL"); key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        try:
+            with httpx.Client(timeout=20) as c:
+                r = c.get(f"{url}/rest/v1/file_assets", headers={"apikey": key, "Authorization": f"Bearer {key}"}, params={"id":"eq."+asset_id,"select":"dropbox_path","limit":"1"})
+                if r.status_code == 200 and r.json():
+                    path = r.json()[0]["dropbox_path"]
+                    link = client.temp_link(path)
+        except Exception:
+            pass
+
+    if not link:
+        return func.HttpResponse("Not found", status_code=404)
+    return func.HttpResponse(json.dumps({"ok": True, "link": link}), mimetype="application/json")

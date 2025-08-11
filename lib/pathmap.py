@@ -1,26 +1,31 @@
-
 from .naming import slugify
 
-ROOT = "Altus_Empire_Command_Center"
+APP_ROOT = "Altus_Empire_Command_Center"
 
-# ---- Roots ----
-def owner_root(owner_name: str, owner_id: int) -> str:
-    return f"{ROOT}/01_Owners/{slugify(owner_name)}-{owner_id}"
+# ---- Owner ----
+def owner_root(owner_name, owner_id):
+    return f"/{APP_ROOT}/00_Owners/{slugify(owner_name)}-{owner_id}"
 
-def property_root(owner_name: str, owner_id: int, property_name: str, property_id: int) -> str:
-    return f"{owner_root(owner_name, owner_id)}/Properties/{slugify(property_name)}-{property_id}"
+OWNER_SUBS = [
+    "00_Onboarding",
+    "01_Agreements",
+    "02_Tax_W9",
+    "03_Banking_DD",
+    "04_Remittance_Packages",
+    "05_Communications",
+    "06_Legal",
+    "07_Notes"
+]
 
-def unit_root(owner_name: str, owner_id: int, property_name: str, property_id: int, unit_name: str, unit_id: int) -> str:
-    return f"{property_root(owner_name, owner_id, property_name, property_id)}/01_Units/{slugify(unit_name)}-{unit_id}"
+# ---- Property (kept at top-level 01_Properties to preserve your current tree) ----
+def property_folder_name(property_name, property_id):
+    return f"{slugify(property_name)}-{property_id}"
 
-def lease_root(owner_name: str, owner_id: int, property_name: str, property_id: int, lease_id: int) -> str:
-    return f"{property_root(owner_name, owner_id, property_name, property_id)}/02_Leases/{lease_id}"
+def property_root(owner_name, owner_id, property_name, property_id):
+    return f"/{APP_ROOT}/01_Properties/{property_folder_name(property_name, property_id)}"
 
-def applicant_root(owner_name: str, owner_id: int, property_name: str, property_id: int, applicant_id: int, applicant_name: str) -> str:
-    return f"{property_root(owner_name, owner_id, property_name, property_id)}/10_Applicants/{slugify(applicant_name)}-{applicant_id}"
-
-# ---- Property containers (always created at property provision) ----
-PROPERTY_CONTAINERS = [
+PROPERTY_SUBS = [
+    "01_Units",
     "02_Leases",
     "03_Photos",
     "04_Inspections",
@@ -28,39 +33,55 @@ PROPERTY_CONTAINERS = [
     "06_Legal",
     "07_Financials",
     "08_Acquisition_Docs",
-    "10_Applicants",
+    "09_Notices",
+    "10_Construction",
+    "11_Applicants",
+    "12_Turnover"
 ]
 
-# ---- Lease docs ----
-LEASE_SUBS = [
-    "01_Signed_Lease",
-    "02_Amendments",
-    "03_Tenant_Correspondence",
-    "04_Move_In",
-    "05_Move_Out",
-    "06_Notices",
-]
+# ---- Unit ----
+def unit_root(owner_name, owner_id, property_name, property_id, unit_name, unit_id):
+    prop = property_folder_name(property_name, property_id)
+    return f"/{APP_ROOT}/01_Properties/{prop}/01_Units/{slugify(unit_name)}-{unit_id}"
 
-# ---- Unit structure ----
 UNIT_SUBS = [
-    "01_Media/01_Photos",
-    "01_Media/02_Videos",
+    "01_Photos",
     "02_Inspections",
-    "03_Turnover/01_Pre_Media",
-    "03_Turnover/02_Scope_Budget",
-    "03_Turnover/03_Work_Orders",
-    "03_Turnover/04_Post_Media",
+    "03_Turnover",
+    "04_Work_Orders",
+    "05_Construction",
+    "06_Notices"
 ]
 
-# ---- Applicants ----
-APPLICANT_SUBS = ["Application", "Screening", "Correspondence"]
+# ---- Lease ----
+def lease_root(owner_name, owner_id, property_name, property_id, lease_id):
+    prop = property_folder_name(property_name, property_id)
+    return f"/{APP_ROOT}/01_Properties/{prop}/02_Leases/{lease_id}"
 
-# ---- Work Orders ----
-def property_work_order_root(owner_name: str, owner_id: int, property_name: str, property_id: int, work_order_id: int) -> str:
-    return f"{property_root(owner_name, owner_id, property_name, property_id)}/05_Work_Orders/{work_order_id}"
+LEASE_SUBS = [
+    "Signed_Lease_Agreement",
+    "Amendments",
+    "Tenant_Correspondence",
+    "Notices",
+    "Subsidy",
+    "Legal"
+]
 
-def unit_turnover_work_order_root(owner_name: str, owner_id: int, property_name: str, property_id: int,
-                                  unit_name: str, unit_id: int, work_order_id: int) -> str:
-    return f"{unit_root(owner_name, owner_id, property_name, property_id, unit_name, unit_id)}/03_Turnover/03_Work_Orders/{work_order_id}"
+# ---- Applicant ----
+def applicant_root(owner_name, owner_id, property_name, property_id, applicant_name, applicant_id):
+    prop = property_folder_name(property_name, property_id)
+    return f"/{APP_ROOT}/01_Properties/{prop}/11_Applicants/{slugify(applicant_name)}-{applicant_id}"
 
-WORK_ORDER_SUBS = ["Bids", "POs", "Photos", "Invoices", "Docs"]
+APPLICANT_SUBS = [
+    "Application",
+    "Screening",
+    "Correspondence"
+]
+
+# ---- Work Order ----
+def work_order_root(owner_name, owner_id, property_name, property_id, unit_name=None, unit_id=None, work_order_id=None):
+    prop = property_folder_name(property_name, property_id)
+    if unit_id:
+        unit = f"{slugify(unit_name)}-{unit_id}"
+        return f"/{APP_ROOT}/01_Properties/{prop}/01_Units/{unit}/04_Work_Orders/WO-{work_order_id}"
+    return f"/{APP_ROOT}/01_Properties/{prop}/05_Work_Orders/WO-{work_order_id}"
