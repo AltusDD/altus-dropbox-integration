@@ -1,28 +1,28 @@
-from .naming import slugify
+# lib/pathmap.py
+import re
+from typing import Optional
 
 APP_ROOT = "Altus_Empire_Command_Center"
 
-# ---- Owner ----
-def owner_root(owner_name, owner_id):
-    return f"/{APP_ROOT}/00_Owners/{slugify(owner_name)}-{owner_id}"
+_slug_re = re.compile(r"[^a-z0-9]+")
+def slugify(s: Optional[str]) -> str:
+    if not s:
+        return "unknown"
+    s = s.lower().strip()
+    s = _slug_re.sub("-", s)
+    s = s.strip("-")
+    return s or "unknown"
 
+# ---- Subfolder standards (Empire Grade) ----
 OWNER_SUBS = [
-    "00_Onboarding",
-    "01_Agreements",
-    "02_Tax_W9",
-    "03_Banking_DD",
-    "04_Remittance_Packages",
-    "05_Communications",
-    "06_Legal",
-    "07_Notes"
+    "01_Profile",
+    "02_Agreements",          # mgmt agreement, addenda
+    "03_Tax",                 # W-9, 1099 notices
+    "04_Comms",               # owner communications
+    "05_Reports",             # monthly remittance pkgs
+    "06_Bill_Pay",            # direct-deposit, ACH
+    "07_Legal"
 ]
-
-# ---- Property (kept at top-level 01_Properties to preserve your current tree) ----
-def property_folder_name(property_name, property_id):
-    return f"{slugify(property_name)}-{property_id}"
-
-def property_root(owner_name, owner_id, property_name, property_id):
-    return f"/{APP_ROOT}/01_Properties/{property_folder_name(property_name, property_id)}"
 
 PROPERTY_SUBS = [
     "01_Units",
@@ -35,53 +35,49 @@ PROPERTY_SUBS = [
     "08_Acquisition_Docs",
     "09_Notices",
     "10_Construction",
-    "11_Applicants",
-    "12_Turnover"
+    "11_Media"
 ]
-
-# ---- Unit ----
-def unit_root(owner_name, owner_id, property_name, property_id, unit_name, unit_id):
-    prop = property_folder_name(property_name, property_id)
-    return f"/{APP_ROOT}/01_Properties/{prop}/01_Units/{slugify(unit_name)}-{unit_id}"
 
 UNIT_SUBS = [
     "01_Photos",
     "02_Inspections",
-    "03_Turnover",
-    "04_Work_Orders",
-    "05_Construction",
-    "06_Notices"
+    "03_Work_Orders",
+    "04_Legal",
+    "05_Turnover",            # move-out photos, repair budget, completion photos
+    "06_Media",
+    "07_Construction"
 ]
-
-# ---- Lease ----
-def lease_root(owner_name, owner_id, property_name, property_id, lease_id):
-    prop = property_folder_name(property_name, property_id)
-    return f"/{APP_ROOT}/01_Properties/{prop}/02_Leases/{lease_id}"
 
 LEASE_SUBS = [
     "Signed_Lease_Agreement",
     "Amendments",
     "Tenant_Correspondence",
     "Notices",
-    "Subsidy",
-    "Legal"
+    "Subsidy_Vouchers",
+    "Applications"
 ]
 
-# ---- Applicant ----
-def applicant_root(owner_name, owner_id, property_name, property_id, applicant_name, applicant_id):
-    prop = property_folder_name(property_name, property_id)
-    return f"/{APP_ROOT}/01_Properties/{prop}/11_Applicants/{slugify(applicant_name)}-{applicant_id}"
+# ---- Root path builders ----
+def owner_root(owner_name: Optional[str], owner_id: Optional[int]) -> str:
+    return f"/{APP_ROOT}/00_Owners/{slugify(owner_name)}-{owner_id}"
 
-APPLICANT_SUBS = [
-    "Application",
-    "Screening",
-    "Correspondence"
-]
+# We’re keeping the current property placement (not nested under owner) per your note.
+def property_root(owner_name: Optional[str], owner_id: Optional[int],
+                  property_name: Optional[str], property_id: Optional[int]) -> str:
+    return f"/{APP_ROOT}/01_Properties/{slugify(property_name)}-{property_id}"
 
-# ---- Work Order ----
-def work_order_root(owner_name, owner_id, property_name, property_id, unit_name=None, unit_id=None, work_order_id=None):
-    prop = property_folder_name(property_name, property_id)
-    if unit_id:
-        unit = f"{slugify(unit_name)}-{unit_id}"
-        return f"/{APP_ROOT}/01_Properties/{prop}/01_Units/{unit}/04_Work_Orders/WO-{work_order_id}"
-    return f"/{APP_ROOT}/01_Properties/{prop}/05_Work_Orders/WO-{work_order_id}"
+def unit_root(owner_name: Optional[str], owner_id: Optional[int],
+              property_name: Optional[str], property_id: Optional[int],
+              unit_name: Optional[str], unit_id: Optional[int]) -> str:
+    return (
+        f"/{APP_ROOT}/01_Properties/{slugify(property_name)}-{property_id}"
+        f"/01_Units/{slugify(unit_name)}-{unit_id}"
+    )
+
+def lease_root(owner_name: Optional[str], owner_id: Optional[int],
+               property_name: Optional[str], property_id: Optional[int],
+               lease_id: Optional[int]) -> str:
+    return (
+        f"/{APP_ROOT}/01_Properties/{slugify(property_name)}-{property_id}"
+        f"/02_Leases/{lease_id}"
+    )
