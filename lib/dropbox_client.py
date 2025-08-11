@@ -1,4 +1,3 @@
-# lib/dropbox_client.py
 import os
 import httpx
 import dropbox
@@ -24,5 +23,5 @@ class DropboxClient:
             r.raise_for_status()
             token = r.json()["access_token"]
 
-        dbx = dropbox.Dropbox(token)  # short-lived access token
+        dbx = dropbox.Dropbox(token)  # short-lived token
         return cls(dbx)
