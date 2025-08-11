@@ -1,14 +1,20 @@
-from __future__ import annotations
-import re, unicodedata, datetime as _dt
 
-def slugify(s: str) -> str:
-    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
-    s = s.strip().lower()
-    s = re.sub(r"\s+", "-", s)
-    s = re.sub(r"[^a-z0-9\-_]+", "", s)
-    s = re.sub(r"-{2,}", "-", s)
-    return s or "unnamed"
+import re
+import time
 
+def slugify(value: str) -> str:
+    value = value.strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    value = re.sub(r"-{2,}", "-", value).strip("-")
+    return value or "unnamed"
 
-def canonical_filename(dt: _dt.date, ftype: str, desc: str, ext: str) -> str:
-    return f"{dt:%Y-%m-%d}_{slugify(ftype)}_{slugify(desc)}.{slugify(ext)}"
+def safe_filename(name: str) -> str:
+    name = name.strip()
+    name = re.sub(r"[\\/:*?\"<>|]", "_", name)
+    name = re.sub(r"\s+", "_", name)
+    return name or "file"
+
+def stamped_filename(original: str) -> str:
+    base = safe_filename(original)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    return f"{ts}__{base}"

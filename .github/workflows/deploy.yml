@@ -1,41 +1,35 @@
-name: Deploy Functions App
+
+name: Deploy to Azure (OIDC)
 
 on:
-  push:
-    branches: [ main ]
-  # Adds the green "Run workflow" button in the Actions tab
   workflow_dispatch:
-    inputs:
-      deploy_mode:
-        description: "Choose deployment method"
-        type: choice
-        options: [ oidc, publish_profile ]
-        default: oidc
+  push:
+    branches: [ "main" ]
 
 permissions:
-  id-token: write   # required for OIDC
+  id-token: write
   contents: read
 
-concurrency:
-  group: deploy-${{ github.ref_name }}
-  cancel-in-progress: true
-
 jobs:
-  # ---------------- OIDC (preferred) ----------------
-  deploy_oidc:
-    if: ${{ github.event_name == 'push' || github.event.inputs.deploy_mode == 'oidc' }}
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install deps (optional local build)
+      - name: Install dependencies to package folder
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -t .python_packages/lib/site-packages
+
+      - name: Create deployment package
+        run: |
+          zip -r package.zip host.json requirements.txt .funcignore lib functions .python_packages db README.md
 
       - name: Azure Login (OIDC)
         uses: azure/login@v2
@@ -44,37 +38,6 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy to Azure Functions
-        uses: Azure/functions-action@v1
-        with:
-          app-name: ${{ secrets.AZURE_FUNCTIONAPP_NAME }}
-          package: '.'
-          scm-do-build-during-deployment: true
-          enable-oryx-build: true
-          respect-funcignore: true
-
-  # --------------- Publish Profile (fallback) ---------------
-  deploy_publish_profile:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_mode == 'publish_profile' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install deps (optional local build)
+      - name: Zip Deploy to Function App
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Deploy to Azure Functions (Publish Profile)
-        uses: Azure/functions-action@v1
-        with:
-          app-name: ${{ secrets.AZURE_FUNCTIONAPP_NAME }}
-          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
-          package: '.'
-          scm-do-build-during-deployment: true
-          enable-oryx-build: true
-          respect-funcignore: true
+          az functionapp deployment source config-zip             --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}"             --name "${{ secrets.AZURE_FUNCTIONAPP_NAME }}"             --src package.zip

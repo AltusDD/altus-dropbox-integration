@@ -1,5 +1,5 @@
-local.settings.json
-**/*.pyc
-__pycache__/
 .venv/
 .python_packages/
+__pycache__/
+*.pyc
+local.settings.json

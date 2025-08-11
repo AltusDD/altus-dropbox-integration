@@ -1,64 +1,43 @@
-from __future__ import annotations
-import os, time
+
+import os
 import dropbox
-from dropbox.exceptions import ApiError, AuthError, RateLimitError
-from dropbox.files import WriteMode
+from dropbox.exceptions import ApiError
 
-DROPBOX_APP_KEY = os.environ["DROPBOX_APP_KEY"]
-DROPBOX_APP_SECRET = os.environ["DROPBOX_APP_SECRET"]
-DROPBOX_REFRESH_TOKEN = os.environ["DROPBOX_REFRESH_TOKEN"]
+APP_KEY = os.getenv("DROPBOX_APP_KEY")
+APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
+REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 
-def _new_dbx() -> dropbox.Dropbox:
-    return dropbox.Dropbox(
-        oauth2_refresh_token=DROPBOX_REFRESH_TOKEN,
-        app_key=DROPBOX_APP_KEY,
-        app_secret=DROPBOX_APP_SECRET,
-        timeout=60,
-    )
+def get_dbx() -> dropbox.Dropbox:
+    if not (APP_KEY and APP_SECRET and REFRESH_TOKEN):
+        raise RuntimeError("Missing Dropbox credentials in env settings.")
+    return dropbox.Dropbox(oauth2_refresh_token=REFRESH_TOKEN, app_key=APP_KEY, app_secret=APP_SECRET)
 
-def with_client(fn):
-    def wrapper(*args, **kwargs):
-        for attempt in range(5):
-            try:
-                dbx = _new_dbx()
-                return fn(dbx, *args, **kwargs)
-            except RateLimitError as e:
-                ra = getattr(e, "retry_after", None)
-                time.sleep(ra or min(2**attempt, 30))
-            except AuthError:
-                raise
-            except ApiError:
-                raise
-        raise RuntimeError("Dropbox operation failed after retries.")
-    return wrapper
-
-@with_client
-def ensure_folder_tree(dbx, *paths: str):
-    for p in paths:
-        if not p.startswith("/"):
-            p = "/" + p
+def ensure_folder(path: str) -> None:
+    dbx = get_dbx()
+    try:
+        dbx.files_get_metadata(path)
+        return
+    except ApiError:
         try:
-            dbx.files_create_folder_v2(p)
-        except ApiError as e:
-            if not (e.error.is_path() and e.error.get_path().is_conflict()):
-                raise
+            dbx.files_create_folder_v2(path, autorename=False)
+        except ApiError:
+            pass
 
-@with_client
-def upload_file(dbx, path: str, data: bytes, mode: WriteMode = WriteMode("add")):
-    if not path.startswith("/"):
-        path = "/" + path
-    res = dbx.files_upload(data, path, mode=mode, mute=True)
+def upload_bytes(folder: str, filename: str, data: bytes) -> dict:
+    dbx = get_dbx()
+    ensure_folder(folder)
+    full_path = f"{folder}/{filename}"
+    res = dbx.files_upload(data, full_path, mode=dropbox.files.WriteMode.add, mute=True, strict_conflict=False)
     return {
         "path_lower": res.path_lower,
-        "id": res.id,
-        "rev": res.rev,
-        "size": res.size,
         "content_hash": res.content_hash,
+        "size": res.size,
+        "rev": res.rev,
+        "id": res.id,
+        "name": res.name,
     }
 
-@with_client
-def get_temp_link(dbx, path: str) -> str:
-    if not path.startswith("/"):
-        path = "/" + path
-    link = dbx.files_get_temporary_link(path)
+def temp_link(full_path: str) -> str:
+    dbx = get_dbx()
+    link = dbx.files_get_temporary_link(full_path)
     return link.link

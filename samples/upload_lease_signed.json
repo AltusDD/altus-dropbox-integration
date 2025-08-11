@@ -1,11 +1,7 @@
+
 {
   "entity_type": "LeaseSigned",
-  "meta": {
-    "property_name": "Sunset Villas",
-    "property_id": 101,
-    "lease_id": 555,
-    "actor": "doorloop-webhook"
-  },
+  "meta": {"property_name": "Sunset Villas", "property_id": 101, "lease_id": 555, "actor": "doorloop"},
   "original_filename": "lease_555_signed.pdf",
-  "file_base64": "<BASE64>"
+  "file_base64": "<BASE64-PDF>"
 }

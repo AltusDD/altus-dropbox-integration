@@ -1,106 +1,87 @@
-from __future__ import annotations
-import os, json, base64, logging, datetime as dt
-from typing import Tuple, Optional
+
+import json
+import logging
+import os
+import base64
 import azure.functions as func
-import httpx
-from requests_toolbelt.multipart.decoder import MultipartDecoder
-from lib.dropbox_client import upload_file
-from lib.pathmap import upload_target
-from lib.naming import canonical_filename
+import requests
+from lib.pathmap import upload_folder_for
+from lib.naming import stamped_filename
+from lib.dropbox_client import upload_bytes, ensure_folder
 
-SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
-SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-def _sb_insert(table: str, row: dict):
+def sb_insert(table: str, row: dict):
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     headers = {
         "apikey": SUPABASE_SERVICE_ROLE_KEY,
         "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "return=representation",
+        "Prefer": "return=representation"
     }
-    with httpx.Client(timeout=30) as c:
-        r = c.post(url, headers=headers, json=row)
-        r.raise_for_status()
-        return r.json()
-
-
-def _parse_multipart(req: func.HttpRequest) -> Tuple[str, dict, bytes, str]:
-    ct = req.headers.get("content-type") or req.headers.get("Content-Type")
-    if not ct or "multipart/form-data" not in ct:
-        raise ValueError("Not multipart")
-    dec = MultipartDecoder(req.get_body(), ct)
-
-    entity_type: Optional[str] = None
-    meta: dict = {}
-    file_bytes: Optional[bytes] = None
-    original_filename: Optional[str] = None
-
-    for part in dec.parts:
-        cd = part.headers.get(b"Content-Disposition", b"").decode("utf-8", "ignore")
-        def _extract(name: str):
-            key = f'{name}="'
-            if key in cd:
-                after = cd.split(key, 1)[1]
-                return after.split('"', 1)[0]
-            return None
-        field_name = _extract("name")
-        if field_name == "entity_type":
-            entity_type = part.text
-        elif field_name == "meta":
-            try:
-                meta = json.loads(part.text or "{}")
-            except Exception:
-                meta = {}
-        elif field_name == "file":
-            file_bytes = part.content
-            original_filename = _extract("filename") or "upload.bin"
-
-    if not entity_type or file_bytes is None or original_filename is None:
-        raise ValueError("Missing multipart fields: entity_type/meta/file")
-    return entity_type, meta, file_bytes, original_filename
-
+    r = requests.post(url, headers=headers, json=row, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+    return data[0] if isinstance(data, list) and data else data
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
-        ct = (req.headers.get("content-type") or "").lower()
-        if "multipart/form-data" in ct:
-            entity_type, meta, file_bytes, original_filename = _parse_multipart(req)
-        else:
-            body = req.get_json()
-            entity_type = body["entity_type"]
-            meta = body.get("meta", {})
-            original_filename = body["original_filename"]
-            file_bytes = base64.b64decode(body["file_base64"])  # raises on invalid
+        body = req.get_json()
+    except ValueError:
+        return func.HttpResponse(json.dumps({"ok": False, "error": "Invalid JSON"}), status_code=400, mimetype="application/json")
 
-        today = dt.date.today()
-        name_no_ext, sep, ext = original_filename.rpartition(".")
-        ext = ext if sep else "bin"
-        base_desc = name_no_ext or "file"
-        stored_name = canonical_filename(today, entity_type, base_desc, ext)
+    entity_type = body.get("entity_type")
+    meta = body.get("meta") or {}
+    original_filename = body.get("original_filename") or "file.bin"
+    file_b64 = body.get("file_base64")
+    if not (entity_type and file_b64):
+        return func.HttpResponse(json.dumps({"ok": False, "error": "Missing entity_type or file_base64"}), status_code=400, mimetype="application/json")
 
-        target_folder = upload_target(entity_type, meta)
-        full_path = f"{target_folder}/{stored_name}"
+    try:
+        binary = base64.b64decode(file_b64)
+    except Exception:
+        return func.HttpResponse(json.dumps({"ok": False, "error": "Bad base64"}), status_code=400, mimetype="application/json")
 
-        res = upload_file(full_path, file_bytes)
+    folder = upload_folder_for(entity_type, meta)
+    ensure_folder(folder)
+    stored_filename = stamped_filename(original_filename)
 
-        file_row = {
+    res = upload_bytes(folder, stored_filename, binary)
+
+    try:
+        sb_insert("file_sync_audit", {
+            "action": "upload",
             "entity_type": entity_type,
-            "entity_id": meta.get("lease_id") or meta.get("unit_id") or meta.get("property_id"),
+            "entity_id": int(meta.get("lease_id") or meta.get("unit_id") or meta.get("property_id") or 0),
+            "dropbox_path": folder,
+            "status": "success",
+            "detail": {"original_filename": original_filename, "stored_filename": stored_filename}
+        })
+        asset = sb_insert("file_assets", {
+            "entity_type": entity_type,
+            "entity_id": int(meta.get("lease_id") or meta.get("unit_id") or meta.get("property_id") or 0),
             "original_filename": original_filename,
-            "stored_filename": stored_name,
-            "dropbox_path": res["path_lower"],
-            "content_hash": res["content_hash"],
-            "size_bytes": res["size"],
-            "uploaded_by": meta.get("actor"),
-        }
-        _sb_insert("file_assets", file_row)
+            "stored_filename": stored_filename,
+            "dropbox_path": folder,
+            "content_hash": res.get("content_hash"),
+            "size_bytes": res.get("size"),
+            "uploaded_by": str(meta.get("actor") or "system")
+        })
+    except Exception as ex:
+        logging.exception("Supabase insert failed")
+        return func.HttpResponse(json.dumps({
+            "ok": True,
+            "warning": "Upload succeeded, but Supabase insert failed",
+            "folder": folder,
+            "stored_filename": stored_filename,
+            "dropbox": res
+        }), mimetype="application/json", status_code=207)
 
-        return func.HttpResponse(
-            json.dumps({"ok": True, "path": res["path_lower"]}),
-            status_code=200,
-            mimetype="application/json",
-        )
-    except Exception as e:
-        logging.exception("upload error")
-        return func.HttpResponse(str(e), status_code=500)
+    return func.HttpResponse(json.dumps({
+        "ok": True,
+        "folder": folder,
+        "stored_filename": stored_filename,
+        "dropbox": res,
+        "asset": asset
+    }), mimetype="application/json")

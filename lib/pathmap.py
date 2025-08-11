@@ -1,36 +1,60 @@
-from __future__ import annotations
+
 from .naming import slugify
 
 ROOT = "/Altus_Empire_Command_Center"
 
-def property_root(property_name: str, property_id: int) -> str:
-    return f"{ROOT}/01_Properties/{slugify(property_name)}-{property_id}"
+def property_root(meta: dict) -> str:
+    pname = meta.get("property_name") or meta.get("name") or "property"
+    pid = meta.get("property_id") or meta.get("id") or 0
+    return f"{ROOT}/01_Properties/{slugify(pname)}-{pid}"
 
-def unit_root(property_name: str, property_id: int, unit_name: str, unit_id: int) -> str:
-    return f"{property_root(property_name, property_id)}/01_Units/{slugify(unit_name)}-{unit_id}"
+def unit_root(meta: dict) -> str:
+    base = property_root(meta)
+    uname = meta.get("unit_name") or meta.get("name") or "unit"
+    uid = meta.get("unit_id") or meta.get("id") or 0
+    return f"{base}/01_Units/{slugify(uname)}-{uid}"
 
-def lease_root(property_name: str, property_id: int, lease_id: int) -> str:
-    return f"{property_root(property_name, property_id)}/02_Leases/{lease_id}"
+def lease_root(meta: dict) -> str:
+    base = property_root(meta)
+    lid = meta.get("lease_id") or meta.get("id") or 0
+    return f"{base}/02_Leases/{lid}"
 
-def deal_room_root() -> str:
-    return f"{ROOT}/04_Deal_Room"
+def canonical_folders_for(entity_type: str, meta_or_new: dict) -> list[str]:
+    t = (entity_type or "").lower()
+    if t == "property":
+        pr = property_root(meta_or_new)
+        return [
+            pr + "/01_Units",
+            pr + "/02_Leases",
+            pr + "/03_Photos",
+            pr + "/04_Inspections",
+            pr + "/05_Work_Orders",
+            pr + "/06_Legal",
+            pr + "/07_Financials",
+            pr + "/08_Acquisition_Docs",
+        ]
+    if t == "unit":
+        ur = unit_root(meta_or_new)
+        return [ur + "/01_Photos", ur + "/02_Inspections"]
+    if t == "lease":
+        lr = lease_root(meta_or_new)
+        return [lr + "/Signed_Lease_Agreement", lr + "/Amendments", lr + "/Tenant_Correspondence"]
+    return []
 
-def upload_target(entity_type: str, meta: dict) -> str:
-    et = (entity_type or "").strip()
-    if et == "Inspection":
-        if meta.get("unit_name") and meta.get("unit_id"):
-            return f"{unit_root(meta['property_name'], meta['property_id'], meta['unit_name'], meta['unit_id'])}/02_Inspections"
-        return f"{property_root(meta['property_name'], meta['property_id'])}/04_Inspections"
-    if et == "UnitPhoto":
-        return f"{unit_root(meta['property_name'], meta['property_id'], meta['unit_name'], meta['unit_id'])}/01_Photos"
-    if et == "PropertyPhoto":
-        return f"{property_root(meta['property_name'], meta['property_id'])}/03_Photos"
-    if et == "LeaseSigned":
-        return f"{lease_root(meta['property_name'], meta['property_id'], meta['lease_id'])}/Signed_Lease_Agreement"
-    if et == "LeaseAmendment":
-        return f"{lease_root(meta['property_name'], meta['property_id'], meta['lease_id'])}/Amendments"
-    if et == "LeaseCorrespondence":
-        return f"{lease_root(meta['property_name'], meta['property_id'], meta['lease_id'])}/Tenant_Correspondence"
-    if et == "Deal_Room":
-        return deal_room_root()
-    raise ValueError(f"Unsupported entity_type: {entity_type}")
+def upload_folder_for(entity_type: str, meta: dict) -> str:
+    t = (entity_type or "").lower()
+    if t == "propertyphoto":
+        return property_root(meta) + "/03_Photos"
+    if t == "unitphoto":
+        return unit_root(meta) + "/01_Photos"
+    if t == "inspection":
+        return property_root(meta) + "/04_Inspections"
+    if t == "leasesigned":
+        return lease_root(meta) + "/Signed_Lease_Agreement"
+    if t == "leaseamendment":
+        return lease_root(meta) + "/Amendments"
+    if t == "leasecorrespondence":
+        return lease_root(meta) + "/Tenant_Correspondence"
+    if t == "deal_room":
+        return ROOT + "/04_Deal_Room"
+    return property_root(meta)
