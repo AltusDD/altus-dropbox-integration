@@ -1,4 +1,6 @@
-import json, logging, dropbox
+import json
+import logging
+import dropbox
 import azure.functions as func
 
 from lib.pathmap import (
@@ -7,100 +9,119 @@ from lib.pathmap import (
 )
 from lib.dropbox_client import DropboxClient
 
-def _get_int(d, k):
-    v = d.get(k)
+
+def _get_int(d: dict, key: str):
+    """Safely cast d[key] to int when present."""
+    v = (d or {}).get(key)
     try:
         return None if v is None else int(v)
     except (TypeError, ValueError):
         return v
 
+
 def _ensure_folder(client: DropboxClient, path: str):
     """
-    Idempotently ensure a folder exists at `path` using the Dropbox SDK.
+    Idempotently ensure a folder exists at `path`.
+
+    We *create first* and treat 'conflict' as success. This avoids tricky
+    metadata checks and works even with eventual consistency.
     """
     try:
-        md = client.dbx.files_get_metadata(path)
-        if isinstance(md, dropbox.files.FolderMetadata):
-            return
-        raise RuntimeError(f"Path exists but is not a folder: {path}")
+        client.dbx.files_create_folder_v2(path, autorename=False)
+        logging.info("Created folder: %s", path)
     except dropbox.exceptions.ApiError as e:
-        # create if not_found
-        try:
-            if e.error.is_path() and e.error.get_path().is_not_found():
-                client.dbx.files_create_folder_v2(path, autorename=False)
-                return
-        except Exception:
-            pass
-        # if it's a conflict, treat as ok/idempotent
-        if "conflict" in str(e).lower():
+        msg = str(e).lower()
+        if "conflict" in msg:
+            # Already there -> OK
+            logging.info("Folder already exists (ok): %s", path)
             return
+        # If parent is missing, msg often contains 'not_found'
+        logging.error("Failed creating folder '%s': %s", path, e)
         raise
 
+
+def _plan_paths(entity: str, data: dict):
+    """
+    Compute the base folder and subfolders to create for the given entity.
+    Returns (base_path, [subfolder_names]).
+    """
+    entity = (entity or "").strip().lower()
+
+    if entity == "owner":
+        base = owner_root(data.get("name"), _get_int(data, "id"))
+        subs = OWNER_SUBS
+        return base, subs
+
+    if entity == "property":
+        base = property_root(
+            data.get("owner_name"), _get_int(data, "owner_id"),
+            data.get("name"), _get_int(data, "id"),
+        )
+        subs = PROPERTY_SUBS
+        return base, subs
+
+    if entity == "unit":
+        base = unit_root(
+            data.get("owner_name"), _get_int(data, "owner_id"),
+            data.get("property_name"), _get_int(data, "property_id"),
+            data.get("name"), _get_int(data, "id"),
+        )
+        subs = UNIT_SUBS
+        return base, subs
+
+    if entity == "lease":
+        base = lease_root(
+            data.get("owner_name"), _get_int(data, "owner_id"),
+            data.get("property_name"), _get_int(data, "property_id"),
+            _get_int(data, "id"),
+        )
+        subs = LEASE_SUBS
+        return base, subs
+
+    raise ValueError(f"unknown entity_type: {entity}")
+
+
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info("dropbox_provision_folders starting")
+    logging.info("dropbox_provision_folders: start")
+
+    # Parse input JSON
     try:
         body = req.get_json()
     except ValueError:
         return func.HttpResponse("Invalid JSON", status_code=400)
 
-    entity = (body.get("entity_type") or "").strip().lower()
+    entity = body.get("entity_type")
     data = body.get("new") or {}
 
+    # Init Dropbox client from env
     try:
         client = DropboxClient.from_env()
     except Exception as e:
         logging.exception("Dropbox client init failed")
         return func.HttpResponse(f"Server config error: {e}", status_code=500)
 
-    created = []
-
+    # Plan and create folders
     try:
-        if entity == "owner":
-            base = owner_root(data.get("name"), _get_int(data, "id"))
-            _ensure_folder(client, base);  created.append(base)
-            for s in OWNER_SUBS:
-                p = f"{base}/{s}"
-                _ensure_folder(client, p);  created.append(p)
+        base, subs = _plan_paths(entity, data)
+        created = []
 
-        elif entity == "property":
-            base = property_root(
-                data.get("owner_name"), _get_int(data, "owner_id"),
-                data.get("name"), _get_int(data, "id")
-            )
-            _ensure_folder(client, base);  created.append(base)
-            for s in PROPERTY_SUBS:
-                p = f"{base}/{s}"
-                _ensure_folder(client, p);  created.append(p)
+        _ensure_folder(client, base)
+        created.append(base)
 
-        elif entity == "unit":
-            base = unit_root(
-                data.get("owner_name"), _get_int(data, "owner_id"),
-                data.get("property_name"), _get_int(data, "property_id"),
-                data.get("name"), _get_int(data, "id")
-            )
-            _ensure_folder(client, base);  created.append(base)
-            for s in UNIT_SUBS:
-                p = f"{base}/{s}"
-                _ensure_folder(client, p);  created.append(p)
-
-        elif entity == "lease":
-            base = lease_root(
-                data.get("owner_name"), _get_int(data, "owner_id"),
-                data.get("property_name"), _get_int(data, "property_id"),
-                _get_int(data, "id")
-            )
-            _ensure_folder(client, base);  created.append(base)
-            for s in LEASE_SUBS:
-                p = f"{base}/{s}"
-                _ensure_folder(client, p);  created.append(p)
-
-        else:
-            return func.HttpResponse("unknown entity_type", status_code=400)
+        for s in subs:
+            p = f"{base}/{s}"
+            _ensure_folder(client, p)
+            created.append(p)
 
         return func.HttpResponse(
             json.dumps({"ok": True, "created": created}),
             mimetype="application/json"
         )
+
+    except ValueError as ve:
+        # unknown entity_type, bad inputs, etc.
+        logging.warning("Bad request: %s", ve)
+        return func.HttpResponse(str(ve), status_code=400)
 
     except Exception as e:
         logging.exception("Provision failed")
