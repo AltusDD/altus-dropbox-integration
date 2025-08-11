@@ -1,0 +1,143 @@
+name: Run Smoke Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_path:
+        description: "Optional Dropbox path for get_temp_link (e.g. /Altus_Empire_Command_Center/.../hello.txt)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      BASE: ${{ secrets.FUNC_BASE_URL }}
+      CODE: ${{ secrets.FUNC_CODE_DEFAULT }}
+      TEST_PATH: ${{ github.event.inputs.test_path }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq curl
+
+      - name: Echo base URL
+        run: |
+          echo "Base: $BASE"
+          if [ -z "$BASE" ] || [ -z "$CODE" ]; then
+            echo "::error::Missing secrets FUNC_BASE_URL or FUNC_CODE_DEFAULT"
+            exit 1
+          fi
+
+      # --- Compliance audit (non-fatal if view not present) ---
+      - name: Compliance audit
+        id: compliance
+        run: |
+          set +e
+          url="$BASE/api/compliance/audit?code=$CODE"
+          echo "GET $url"
+          resp=$(curl -s -S -w "\n%{http_code}" "$url")
+          body=$(echo "$resp" | head -n -1)
+          code=$(echo "$resp" | tail -n 1)
+          echo "$body" | jq -r . || true
+          if [ "$code" -ge 500 ]; then
+            echo "::warning::Compliance endpoint returned $code (view may not be installed)."
+          fi
+          echo "code=$code" >> $GITHUB_OUTPUT
+
+      # --- Transfer Property (dry-run) ---
+      - name: Transfer (dry-run)
+        run: |
+          url="$BASE/api/transfer_property_owner?code=$CODE"
+          echo "POST $url"
+          cat > body.json <<'JSON'
+          {
+            "from_owner": {"id": 101, "name": "Sunset Capital Partners"},
+            "to_owner":   {"id": 202, "name": "Northstar Holdings"},
+            "property":   {"id": 201, "name": "Sunset Villas"},
+            "dry_run": true
+          }
+          JSON
+          resp=$(curl -s -S -w "\n%{http_code}" -H "Content-Type: application/json" -d @body.json "$url")
+          body=$(echo "$resp" | head -n -1)
+          code=$(echo "$resp" | tail -n 1)
+          echo "$body" | jq -r .
+          if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+            echo "::error::Transfer dry-run failed with $code"
+            exit 1
+          fi
+
+      # --- DoorLoop writeback (dry-run) ---
+      - name: DoorLoop writeback (dry-run)
+        run: |
+          url="$BASE/api/doorloop_writeback?code=$CODE"
+          echo "POST $url"
+          cat > dl.json <<'JSON'
+          {
+            "property_id": 201,
+            "from_owner_id": 101,
+            "to_owner_id": 202,
+            "effective_date": "2025-08-15",
+            "dry_run": true
+          }
+          JSON
+          resp=$(curl -s -S -w "\n%{http_code}" -H "Content-Type: application/json" -d @dl.json "$url")
+          body=$(echo "$resp" | head -n -1)
+          code=$(echo "$resp" | tail -n 1)
+          echo "$body" | jq -r .
+          if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+            echo "::error::DoorLoop writeback dry-run failed with $code"
+            exit 1
+          fi
+
+      # --- Webhook ingestor (signature bypass) ---
+      - name: Webhook ingestor (skip signature)
+        run: |
+          url="$BASE/api/webhook_ingestor?skip_sig=1&code=$CODE"
+          echo "POST $url"
+          cat > wh.json <<'JSON'
+          {
+            "type": "property.transferred",
+            "property": {"id": 201, "name": "Sunset Villas"},
+            "from_owner": {"id": 101, "name": "Sunset Capital Partners"},
+            "to_owner": {"id": 202, "name": "Northstar Holdings"},
+            "effective_date": "2025-08-15"
+          }
+          JSON
+          resp=$(curl -s -S -w "\n%{http_code}" -H "Content-Type: application/json" -d @wh.json "$url")
+          body=$(echo "$resp" | head -n -1)
+          code=$(echo "$resp" | tail -n 1)
+          echo "$body" | jq -r .
+          if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+            echo "::error::Webhook ingestor returned $code"
+            exit 1
+          fi
+
+      # --- Optional: get_temp_link if TEST_PATH provided ---
+      - name: Get temp link (optional)
+        if: ${{ env.TEST_PATH != '' }}
+        run: |
+          url="$BASE/api/get_temp_link?code=$CODE&path=$(python - <<'PY'
+import urllib.parse, os
+print(urllib.parse.quote(os.environ["TEST_PATH"]))
+PY
+)"
+          echo "GET $url"
+          resp=$(curl -s -S -w "\n%{http_code}" "$url")
+          body=$(echo "$resp" | head -n -1)
+          code=$(echo "$resp" | tail -n 1)
+          echo "$body" | jq -r .
+          if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+            echo "::error::get_temp_link failed with $code"
+            exit 1
+          fi
+
+      - name: Finished
+        run: echo "Smoke tests complete ✅"
