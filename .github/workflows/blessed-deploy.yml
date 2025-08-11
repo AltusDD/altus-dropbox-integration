@@ -2,19 +2,15 @@ name: Deploy Python Function App to Azure
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
   id-token: write
   contents: read
 
-concurrency:
-  group: deploy-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -26,18 +22,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Package ALL Python deps (dropbox, httpx, etc.) into the artifact
-      - name: Install dependencies into .python_packages
+      - name: Install dependencies into local package folder
         run: |
           python -m pip install --upgrade pip
           rm -rf .python_packages
-          pip install -r requirements.txt --target ".python_packages/lib/site-packages"
-          python - << 'PY'
-import pkgutil, pathlib
-p = pathlib.Path(".python_packages/lib/site-packages").resolve()
-mods = {m.name for m in pkgutil.iter_modules([str(p)])}
-print("✓ packaged 'dropbox' module:", "dropbox" in mods)
-PY
+          pip install -r requirements.txt --target .python_packages/lib/site-packages
+          ls -la .python_packages/lib/site-packages | head -n 50
 
       - name: Login to Azure (OIDC)
         uses: azure/login@v2
