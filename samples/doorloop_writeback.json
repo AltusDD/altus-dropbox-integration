@@ -1,0 +1,7 @@
+{
+  "property_id": 201,
+  "from_owner_id": 101,
+  "to_owner_id": 555,
+  "cutoff_date": "2025-08-15",
+  "message": "Ownership transferred from Owner 101 to Owner 555 effective 2025-08-15."
+}

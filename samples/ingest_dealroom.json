@@ -1,0 +1,12 @@
+{
+  "source": "dealroom",
+  "payload": {
+    "owner_id": 101,
+    "owner_name": "Sunset Capital Partners",
+    "property_id": 201,
+    "property_name": "Sunset Villas",
+    "file_name": "LOI_SunsetVillas.pdf",
+    "file_base64": "SGVsbG8=",
+    "category": "media-property"
+  }
+}

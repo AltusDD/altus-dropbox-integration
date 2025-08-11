@@ -9,7 +9,7 @@
       "methods": [
         "post"
       ],
-      "route": "transfer_property_owner"
+      "route": "upload_session/{action}"
     },
     {
       "type": "http",

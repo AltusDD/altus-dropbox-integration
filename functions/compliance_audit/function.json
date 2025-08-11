@@ -7,9 +7,9 @@
       "direction": "in",
       "name": "req",
       "methods": [
-        "post"
+        "get"
       ],
-      "route": "transfer_property_owner"
+      "route": "compliance/audit"
     },
     {
       "type": "http",

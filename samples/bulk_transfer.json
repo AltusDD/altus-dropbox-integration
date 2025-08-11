@@ -1,0 +1,14 @@
+{
+  "transfers": [
+    {
+      "property_id": 201,
+      "property_name": "Sunset Villas",
+      "from_owner_id": 101,
+      "from_owner_name": "Sunset Capital Partners",
+      "to_owner_id": 555,
+      "to_owner_name": "Rising Tide Holdings",
+      "cutoff_date": "2025-08-15",
+      "leave_marker": true
+    }
+  ]
+}

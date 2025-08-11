@@ -9,7 +9,7 @@
       "methods": [
         "post"
       ],
-      "route": "transfer_property_owner"
+      "route": "doorloop_writeback"
     },
     {
       "type": "http",

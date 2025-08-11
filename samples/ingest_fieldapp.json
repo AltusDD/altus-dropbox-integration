@@ -1,0 +1,15 @@
+{
+  "source": "fieldapp",
+  "payload": {
+    "owner_id": 101,
+    "owner_name": "Sunset Capital Partners",
+    "property_id": 201,
+    "property_name": "Sunset Villas",
+    "unit_id": 5,
+    "unit_name": "Unit 5B",
+    "actor_id": "tech-123",
+    "file_name": "2025-08-11_Unit5B_wtr-heater.jpg",
+    "file_base64": "SGVsbG8=",
+    "category": "media-unit"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "from_owner": {
+    "id": 101,
+    "name": "Sunset Capital Partners"
+  },
+  "to_owner": {
+    "id": 202,
+    "name": "Northstar Holdings"
+  },
+  "properties": [
+    {
+      "id": 201,
+      "name": "Sunset Villas"
+    }
+  ],
+  "dry_run": false
+}
