@@ -1,3 +1,2 @@
-azure-functions==1.17.0
-dropbox==11.36.2
-requests>=2.31.0
+azure-functions
+httpx

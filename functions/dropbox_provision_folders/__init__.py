@@ -1,60 +1,33 @@
-
-import json
-import logging
-import os
 import azure.functions as func
-from lib.pathmap import canonical_folders_for
+import json
+from lib.pathmap import property_root, unit_root, lease_root
 from lib.dropbox_client import ensure_folder
-import requests
-
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-
-def supabase_insert_audit(payload: dict):
-    try:
-        url = f"{SUPABASE_URL}/rest/v1/file_sync_audit"
-        headers = {
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-            "Content-Type": "application/json",
-            "Prefer": "return=representation"
-        }
-        requests.post(url, headers=headers, json=payload, timeout=10)
-    except Exception as ex:
-        logging.warning("Supabase audit insert failed: %s", ex)
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
         body = req.get_json()
-    except ValueError:
-        return func.HttpResponse(json.dumps({"ok": False, "error": "Invalid JSON"}), status_code=400, mimetype="application/json")
+        entity_type = body.get("entity_type")
+        data = body.get("new") or {}
+        created = []
 
-    entity_type = str(body.get("entity_type", "")).lower()
-    new_obj = body.get("new") or {}
-    folders = canonical_folders_for(entity_type, new_obj)
+        if entity_type == "property":
+            base = property_root(data["name"], int(data["id"]))
+            for sub in ["01_Units", "02_Leases", "03_Photos", "04_Inspections", "05_Work_Orders", "06_Legal", "07_Financials", "08_Acquisition_Docs"]:
+                ensure_folder(f"{base}/{sub}")
+                created.append(f"{base}/{sub}")
+        elif entity_type == "unit":
+            base = unit_root(data["property_name"], int(data["property_id"]), data["name"], int(data["id"]))
+            for sub in ["01_Photos", "02_Inspections"]:
+                ensure_folder(f"{base}/{sub}")
+                created.append(f"{base}/{sub}")
+        elif entity_type == "lease":
+            base = f"/Altus_Empire_Command_Center/02_Leases/{int(data['id'])}"
+            for sub in ["Signed_Lease_Agreement", "Amendments", "Tenant_Correspondence"]:
+                ensure_folder(f"{base}/{sub}")
+                created.append(f"{base}/{sub}")
+        else:
+            return func.HttpResponse("unknown entity_type", status_code=400)
 
-    created = []
-    for f in folders:
-        try:
-            ensure_folder(f)
-            created.append(f)
-            supabase_insert_audit({
-                "action": "create_folder",
-                "entity_type": entity_type,
-                "entity_id": int(new_obj.get("id", 0)),
-                "dropbox_path": f,
-                "status": "success",
-                "detail": None
-            })
-        except Exception as ex:
-            supabase_insert_audit({
-                "action": "create_folder",
-                "entity_type": entity_type,
-                "entity_id": int(new_obj.get("id", 0)),
-                "dropbox_path": f,
-                "status": "error",
-                "detail": {"error": str(ex)}
-            })
-            logging.exception("Folder create failed for %s", f)
-
-    return func.HttpResponse(json.dumps({"ok": True, "created": created}), mimetype="application/json")
+        return func.HttpResponse(json.dumps({"ok": True, "created": created}), mimetype="application/json")
+    except Exception as e:
+        return func.HttpResponse(str(e), status_code=400)

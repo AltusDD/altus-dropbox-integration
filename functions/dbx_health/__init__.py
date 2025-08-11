@@ -1,12 +1,11 @@
-
-import json
 import azure.functions as func
-from lib.dropbox_client import get_dbx
+import json
+from lib.dropbox_client import get_temp_link, ensure_folder
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
-        dbx = get_dbx()
-        acct = dbx.users_get_current_account()
-        return func.HttpResponse(json.dumps({"ok": True, "account_email": acct.email}), mimetype="application/json")
-    except Exception as ex:
-        return func.HttpResponse(json.dumps({"ok": False, "error": str(ex)}), mimetype="application/json", status_code=500)
+        # hit a cheap endpoint: ensure root exists and return ok
+        ensure_folder("/Altus_Empire_Command_Center")
+        return func.HttpResponse(json.dumps({"ok": True}), mimetype="application/json")
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"ok": False, "error": str(e)}), status_code=500, mimetype="application/json")
