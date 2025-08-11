@@ -5,16 +5,19 @@ import httpx
 REDIRECT_URI = "https://localhost"  # must match your Dropbox app setting
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    try:
-        body = req.get_json()
-    except Exception:
-        return func.HttpResponse("Send JSON body like {\"code\":\"...\"}", status_code=400)
+    code = req.params.get("code")
+    if not code:
+        try:
+            body = req.get_json()
+            code = (body or {}).get("code")
+        except Exception:
+            code = None
 
-    code = body.get("code")
     app_key = os.getenv("DROPBOX_APP_KEY", "")
     app_secret = os.getenv("DROPBOX_APP_SECRET", "")
+
     if not code:
-        return func.HttpResponse("Missing 'code' in JSON body.", status_code=400)
+        return func.HttpResponse("Provide 'code' via query string ?code=... or JSON {"code":"..."}", status_code=400)
     if not app_key or not app_secret:
         return func.HttpResponse("App settings DROPBOX_APP_KEY / DROPBOX_APP_SECRET are missing.", status_code=500)
 
@@ -23,7 +26,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             r = c.post(
                 "https://api.dropboxapi.com/oauth2/token",
                 data={"code": code, "grant_type": "authorization_code", "redirect_uri": REDIRECT_URI},
-                auth=(app_key, app_secret)
+                auth=(app_key, app_secret),
             )
             r.raise_for_status()
             data = r.json()
