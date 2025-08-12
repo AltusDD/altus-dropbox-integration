@@ -1,0 +1,83 @@
+name: Run Smoke Tests (Direct)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BASE: ${{ secrets.FUNC_BASE_URL }}       # e.g. https://<your-app>.azurewebsites.net
+  CODE: ${{ secrets.FUNC_CODE_DEFAULT }}   # default Function key (just the key, no ?code=)
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check secrets
+        run: |
+          test -n "${BASE}" || (echo "Missing FUNC_BASE_URL secret" && exit 1)
+          test -n "${CODE}" || (echo "Missing FUNC_CODE_DEFAULT secret" && exit 1)
+
+      - name: Install jq & curl
+        run: sudo apt-get update -y && sudo apt-get install -y jq curl
+
+      - name: dbx_health
+        run: |
+          URL="${BASE}/api/dbx_health?code=${CODE}"
+          echo "GET $URL"
+          RESP=$(curl -sS -w "\n%{http_code}" "$URL")
+          BODY=$(echo "$RESP" | head -n -1)
+          CODEH=$(echo "$RESP" | tail -n 1)
+          echo "HTTP: $CODEH"
+          echo "$BODY" | jq . || echo "$BODY"
+          test "$CODEH" -ge 200 -a "$CODEH" -lt 300
+
+      - name: dropbox_upload (tiny smoke file)
+        run: |
+          URL="${BASE}/api/dropbox_upload?code=${CODE}"
+          printf "hello from smoke %s\n" "$(date -u +%s)" > msg.txt
+          B64=$(base64 -w0 msg.txt 2>/dev/null || base64 msg.txt)
+          cat > body.json <<'JSON'
+          {
+            "entity_type": "LeaseSigned",
+            "meta": {
+              "owner_id": 101, "owner_name": "Sunset Capital Partners",
+              "property_id": 201, "property_name": "Sunset Villas",
+              "unit_id": 5, "unit_name": "unit-5b-5",
+              "lease_id": 6001, "tenant_slug": "jane-smith"
+            },
+            "original_filename": "smoke-check.txt",
+            "file_base64": "REPLACE_ME"
+          }
+          JSON
+          # inject base64
+          jq --arg b64 "$B64" '.file_base64 = $b64' body.json > body2.json
+
+          echo "POST $URL"
+          RESP=$(curl -sS -w "\n%{http_code}" -H "Content-Type: application/json" -d @body2.json "$URL")
+          BODY=$(echo "$RESP" | head -n -1)
+          CODEU=$(echo "$RESP" | tail -n 1)
+          echo "HTTP: $CODEU"
+          echo "$BODY" | jq . || echo "$BODY"
+          test "$CODEU" -ge 200 -a "$CODEU" -lt 300
+
+      - name: transfer_property_owner (dry-run)
+        run: |
+          URL="${BASE}/api/transfer_property_owner?code=${CODE}"
+          cat > body.json <<'JSON'
+          {
+            "from_owner": {"id": 101, "name": "Sunset Capital Partners"},
+            "to_owner":   {"id": 202, "name": "Northstar Holdings"},
+            "property":   {"id": 201, "name": "Sunset Villas"},
+            "effective_date": "2025-08-15",
+            "dry_run": true
+          }
+          JSON
+          echo "POST $URL"
+          RESP=$(curl -sS -w "\n%{http_code}" -H "Content-Type: application/json" -d @body.json "$URL")
+          BODY=$(echo "$RESP" | head -n -1)
+          CODET=$(echo "$RESP" | tail -n 1)
+          echo "HTTP: $CODET"
+          echo "$BODY" | jq . || echo "$BODY"
+          test "$CODET" -ge 200 -a "$CODET" -lt 300
