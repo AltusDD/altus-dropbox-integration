@@ -1,7 +1,5 @@
 name: Run Smoke Tests (Diag)
-
-on:
-  workflow_dispatch:
+on: { workflow_dispatch: {} }
 
 permissions:
   id-token: write
@@ -15,7 +13,6 @@ env:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-
     steps:
       - name: Azure Login (OIDC)
         uses: azure/login@v2
@@ -27,7 +24,7 @@ jobs:
       - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y jq curl
 
-      - name: Detect Function App and function URLs (RG-scoped, null-safe)
+      - name: Detect function URLs (uses invokeUrlTemplate; smart fallbacks)
         id: urls
         shell: bash
         env:
@@ -41,18 +38,29 @@ jobs:
           RG="${RG:?AZURE_RESOURCE_GROUP secret is missing}"
 
           HOST=$(echo "$BASE" | sed -E 's#https?://([^/]+).*#\1#')
-          echo "Host: $HOST"
-          echo "RG:   $RG"
+          echo "Host: $HOST  |  RG: $RG"
 
-          # Fallbacks
-          defurl() { echo "$BASE/api/$1?code=$CODE"; }
-          DBX_HEALTH_URL=$(defurl dbx_health)
-          UPLOAD_URL=$(defurl dropbox_upload)
-          TRANSFER_URL=$(defurl transfer_property_owner)
-          WEBHOOK_URL=$(defurl webhook_ingestor)
-          WRITEBACK_URL=$(defurl doorloop_writeback)
+          # Route map (fixes your current issue when discovery isn't used)
+          route_of() {
+            case "$1" in
+              dbx_health)        echo "health" ;;
+              dropbox_upload)    echo "upload" ;;
+              transfer_property_owner) echo "transfer_property_owner" ;;
+              webhook_ingestor)  echo "webhook_ingestor" ;;
+              doorloop_writeback) echo "doorloop_writeback" ;;
+              *) echo "$1" ;;
+            esac
+          }
+          fallback() { echo "$BASE/api/$(route_of "$1")?code=$CODE"; }
 
-          # Try to resolve the app by host within RG
+          # Defaults = mapped fallbacks (so /api/health & /api/upload are used)
+          DBX_HEALTH_URL=$(fallback dbx_health)
+          UPLOAD_URL=$(fallback dropbox_upload)
+          TRANSFER_URL=$(fallback transfer_property_owner)
+          WEBHOOK_URL=$(fallback webhook_ingestor)
+          WRITEBACK_URL=$(fallback doorloop_writeback)
+
+          # Try to resolve app by host within RG and read invokeUrlTemplate
           APPS=$(az functionapp list -g "$RG" --query "[].{name:name,host:defaultHostName}" -o tsv || true)
           APP=$(echo "$APPS" | awk -v h="$HOST" '$2==h{print $1; exit}')
           [ -z "${APP:-}" ] && APP=$(echo "$APPS" | awk -v h="$HOST" 'index($2,h){print $1; exit}')
@@ -78,7 +86,7 @@ jobs:
             w=$(mk webhook_ingestor);        [ -n "${w:-}" ] && WEBHOOK_URL="$w"
             d=$(mk doorloop_writeback);      [ -n "${d:-}" ] && WRITEBACK_URL="$d"
           else
-            echo "Could not resolve app from RG; using fallback URLs."
+            echo "Could not resolve app; using mapped fallbacks."
           fi
 
           {
@@ -97,8 +105,7 @@ jobs:
           echo "webhook_ingestor:        ${{ steps.urls.outputs.webhook_ingestor_url }}"
           echo "doorloop_writeback:      ${{ steps.urls.outputs.doorloop_writeback_url }}"
 
-      - name: Health check (dbx_health)
-        if: ${{ steps.urls.outputs.dbx_health_url != '' }}
+      - name: Health check
         shell: bash
         run: |
           set -euo pipefail
@@ -109,8 +116,7 @@ jobs:
           echo "$body" | jq -r .
           test "$code" -ge 200 -a "$code" -lt 300
 
-      - name: Upload a tiny smoke file to Dropbox
-        if: ${{ steps.urls.outputs.dropbox_upload_url != '' }}
+      - name: Upload smoke file
         shell: bash
         run: |
           set -euo pipefail
@@ -140,8 +146,7 @@ jobs:
           echo "$body" | jq -r .
           test "$code" -ge 200 -a "$code" -lt 300
 
-      # Optional tests – will only run if those functions exist in this app
-      - name: Dry-run ownership transfer (no changes)
+      - name: Dry-run ownership transfer
         if: ${{ steps.urls.outputs.transfer_property_owner_url != '' }}
         shell: bash
         run: |
