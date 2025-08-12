@@ -5,7 +5,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # for OIDC Azure login
+  id-token: write
 
 jobs:
   smoke:
@@ -35,20 +35,22 @@ jobs:
         id: detect
         shell: bash
         run: |
-          # Derive APP name from BASE if not provided
+          # Derive APP name from BASE
           APP=$(echo "$BASE" | sed -E 's#https?://([^/.]+).*#\1#')
           echo "Function App: $APP"
 
-          # Find resource group
-          RG=$(az functionapp show -n "$APP" --query resourceGroup -o tsv)
+          # Find resource group (works without knowing RG up front)
+          RG=$(az functionapp list --query "[?name=='$APP'].resourceGroup | [0]" -o tsv)
+          if [ -z "$RG" ]; then
+            echo "::error::Could not find resource group for app $APP"; exit 1
+          fi
           echo "Resource Group: $RG"
 
-          # List functions and URLs
+          # List functions
           az functionapp function list -g "$RG" -n "$APP" -o json > funcs.json
           echo "=== Deployed functions ==="
           jq -r '.[] | [.name, .invokeUrlTemplate] | @tsv' funcs.json || true
 
-          # helper to fetch invokeUrlTemplate (falls back to BASE/api/<name>?code=)
           mkurl() {
             local name="$1"
             local u=$(jq -r --arg N "$name" '.[] | select(.name==$N) | .invokeUrlTemplate // empty' funcs.json)
@@ -59,7 +61,7 @@ jobs:
             fi
           }
 
-          # Export the URLs we care about (only if present)
+          # Export URLs only for functions that exist
           for N in dbx_health transfer_property_owner doorloop_writeback webhook_ingestor; do
             H=$(jq -r --arg N "$N" '.[] | select(.name==$N) | .name // empty' funcs.json)
             if [ -n "$H" ]; then
