@@ -1,0 +1,70 @@
+table_name,columns_count,pk,fks,indexes
+accounts,8,"id, id",0,2
+audit_logs,7,id,0,1
+case_history,6,id,0,3
+case_tags,4,id,0,3
+collection_actions,11,"id, id",1,1
+communications,10,"id, id",0,2
+damages_claims,12,"id, id",0,2
+doorloop_normalized_reports,6,,0,0
+doorloop_normalized_tasks,3,doorloop_id,0,1
+doorloop_normalized_tenants,2,doorloop_id,0,1
+doorloop_normalized_units,3,doorloop_id,0,1
+doorloop_normalized_users,33,,0,0
+doorloop_normalized_vendor_bills,21,,0,0
+doorloop_normalized_vendor_credits,1,,0,0
+doorloop_normalized_vendors,3,doorloop_id,0,1
+doorloop_pipeline_audit,13,id,0,1
+doorloop_raw_accounts,24,id,0,1
+doorloop_raw_activity_logs,6,id,0,1
+doorloop_raw_applications,6,id,0,1
+doorloop_raw_communications,30,id,0,1
+doorloop_raw_expenses,23,id,0,1
+doorloop_raw_files,23,id,0,1
+doorloop_raw_inspections,6,id,0,1
+doorloop_raw_insurance_policies,6,id,0,1
+doorloop_raw_lease_charges,21,id,0,1
+doorloop_raw_lease_credits,18,id,0,1
+doorloop_raw_lease_payments,33,id,0,1
+doorloop_raw_lease_reversed_payments,16,id,0,1
+doorloop_raw_leases,41,id,0,1
+doorloop_raw_notes,15,id,0,1
+doorloop_raw_owners,29,id,0,1
+doorloop_raw_payments,3,id,0,1
+doorloop_raw_portfolios,11,id,0,1
+doorloop_raw_properties,23,id,0,1
+doorloop_raw_property_groups,3,id,0,1
+doorloop_raw_recurring_charges,6,id,0,1
+doorloop_raw_recurring_credits,6,id,0,1
+doorloop_raw_reports,6,id,0,1
+doorloop_raw_tasks,32,id,0,1
+doorloop_raw_tenants,36,id,0,1
+doorloop_raw_units,25,id,0,1
+doorloop_raw_users,32,id,0,1
+doorloop_raw_vendor_bills,21,id,0,1
+doorloop_raw_vendor_credits,1,id,0,1
+doorloop_raw_vendors,28,id,0,1
+doorloop_raw_work_orders,4,id,0,1
+eviction_proceedings,12,"id, id, id",1,2
+file_assets,11,"id, id",0,3
+file_sync_audit,7,"id, id, id, id",0,3
+files,12,"id, id",0,2
+kpi_summary,3,id,0,1
+lease_charges,9,"id, id",0,2
+lease_credits,9,"id, id",0,2
+lease_payments,11,"id, id",0,2
+lease_tenants,2,"lease_id, lease_id, lease_id, tenant_id, tenant_id, tenant_id",2,1
+leases,12,"id, id, id, id, id, id",3,9
+legal_case_import_staging,9,id,0,1
+legal_cases_import_staging,16,id,0,1
+notes,9,"id, id",0,2
+owners,13,"id, id",0,2
+portfolios,5,"id, id",0,2
+properties,17,"id, id",0,2
+property_owners,2,"property_id, property_id, property_id, owner_id, owner_id, owner_id",2,1
+sql_execution_logs,8,id,0,1
+tasks,16,"id, id",0,2
+tenants,13,"id, id",0,2
+units,11,"id, id",0,4
+users,11,"id, id",0,2
+vendors,12,"id, id",0,2

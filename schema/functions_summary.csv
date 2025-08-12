@@ -1,0 +1,13 @@
+name,returns
+add_column_if_not_exists,void
+add_service_role_policy_to_doorloop_tables,void
+columns_in_table,"TABLE(column_name text, data_type text)"
+exec_sql,jsonb
+execute_sql,jsonb
+execute_sql_v2,jsonb
+export_schema_manifest,jsonb
+get_table_columns_rpc,"TABLE(column_name text, data_type text)"
+healthcheck,text
+log_sql_execution,void
+log_sql_execution,void
+touch_leases_updated_at,trigger

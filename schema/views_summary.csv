@@ -1,0 +1,17 @@
+view_name,kind
+get_full_work_orders_view,VIEW
+normalized_leases,VIEW
+normalized_owners,VIEW
+normalized_payments,VIEW
+normalized_properties,VIEW
+normalized_tenants,VIEW
+normalized_units,VIEW
+normalized_vendors,VIEW
+normalized_work_orders,VIEW
+sync_leases,VIEW
+sync_owners,VIEW
+sync_payments,VIEW
+sync_properties,VIEW
+sync_tenants,VIEW
+sync_vendors,VIEW
+sync_work_orders,VIEW

@@ -1,0 +1,168 @@
+name: Schema Sync
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client jq
+
+      - name: Ensure schema dir
+        run: mkdir -p schema
+
+      - name: Export manifest.json
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          cat > export_manifest.sql <<'SQL'
+          WITH tables AS (
+            SELECT c.oid AS table_oid, t.table_name,
+                   jsonb_agg(jsonb_build_object(
+                     'name', col.column_name,
+                     'data_type', col.data_type,
+                     'udt_name', col.udt_name,
+                     'is_nullable', col.is_nullable,
+                     'column_default', col.column_default,
+                     'identity', col.is_identity
+                   ) ORDER BY col.ordinal_position) AS columns
+            FROM information_schema.tables t
+            JOIN information_schema.columns col
+              ON col.table_schema = t.table_schema AND col.table_name = t.table_name
+            JOIN pg_class c ON c.relname = t.table_name
+            JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = t.table_schema
+            WHERE t.table_schema = 'public' AND t.table_type = 'BASE TABLE'
+            GROUP BY c.oid, t.table_name
+          ),
+          pks AS (
+            SELECT c.conrelid AS table_oid,
+                   jsonb_agg(att.attname ORDER BY s.i) AS pk_columns
+            FROM (SELECT c.conrelid, c.conkey, generate_subscripts(c.conkey,1) AS i
+                  FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace
+                  WHERE c.contype='p' AND n.nspname='public') s
+            JOIN pg_attribute att ON att.attrelid=s.conrelid AND att.attnum=s.conkey[s.i]
+            JOIN pg_constraint c ON c.conrelid=s.conrelid
+            GROUP BY c.conrelid
+          ),
+          fks AS (
+            SELECT c.conrelid AS table_oid,
+                   jsonb_agg(jsonb_build_object(
+                     'constraint_name', c.conname,
+                     'columns', fk_cols.cols,
+                     'ref_schema', ref_n.nspname,
+                     'ref_table', ref_cl.relname,
+                     'ref_columns', ref_cols.cols,
+                     'on_update', c.confupdtype::text,
+                     'on_delete', c.confdeltype::text
+                   )) AS foreign_keys
+            FROM pg_constraint c
+            JOIN pg_class cl ON cl.oid=c.conrelid
+            JOIN pg_namespace n ON n.oid=cl.relnamespace
+            JOIN pg_class ref_cl ON ref_cl.oid=c.confrelid
+            JOIN pg_namespace ref_n ON ref_n.oid=ref_cl.relnamespace
+            LEFT JOIN LATERAL (
+              SELECT jsonb_agg(att.attname ORDER BY i) AS cols
+              FROM (SELECT generate_subscripts(c.conkey,1) i) x
+              JOIN pg_attribute att ON att.attrelid=c.conrelid AND att.attnum=c.conkey[x.i]
+            ) fk_cols ON TRUE
+            LEFT JOIN LATERAL (
+              SELECT jsonb_agg(att.attname ORDER BY i) AS cols
+              FROM (SELECT generate_subscripts(c.confkey,1) i) x
+              JOIN pg_attribute att ON att.attrelid=c.confrelid AND att.attnum=c.confkey[x.i]
+            ) ref_cols ON TRUE
+            WHERE c.contype='f' AND n.nspname='public'
+            GROUP BY c.conrelid
+          ),
+          idx AS (
+            SELECT t.oid AS table_oid,
+                   jsonb_agg(jsonb_build_object('name', i.indexname, 'definition', i.indexdef) ORDER BY i.indexname) AS indexes
+            FROM pg_class t
+            JOIN pg_namespace n ON n.oid=t.relnamespace
+            JOIN pg_indexes i ON i.tablename=t.relname AND i.schemaname=n.nspname
+            WHERE n.nspname='public' AND t.relkind='r'
+            GROUP BY t.oid
+          ),
+          tables_full AS (
+            SELECT tables.table_name, tables.columns,
+                   COALESCE(pks.pk_columns,'[]'::jsonb) AS primary_key,
+                   COALESCE(fks.foreign_keys,'[]'::jsonb) AS foreign_keys,
+                   COALESCE(idx.indexes,'[]'::jsonb) AS indexes
+            FROM tables
+            LEFT JOIN pks ON pks.table_oid=tables.table_oid
+            LEFT JOIN fks ON fks.table_oid=tables.table_oid
+            LEFT JOIN idx ON idx.table_oid=tables.table_oid
+          ),
+          views AS (
+            SELECT c.relname AS view_name,
+                   CASE WHEN c.relkind='m' THEN 'MATERIALIZED' ELSE 'VIEW' END AS kind,
+                   pg_get_viewdef(c.oid, TRUE) AS definition
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='public' AND c.relkind IN ('v','m')
+          ),
+          funcs AS (
+            SELECT n.nspname AS schema, p.proname AS name,
+                   pg_get_function_identity_arguments(p.oid) AS args,
+                   pg_get_function_result(p.oid) AS returns,
+                   pg_get_functiondef(p.oid) AS definition
+            FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+            WHERE n.nspname='public'
+          ),
+          trigs AS (
+            SELECT t.tgname AS trigger_name, c.relname AS table_name,
+                   pg_get_triggerdef(t.oid, TRUE) AS definition
+            FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+            JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='public' AND NOT t.tgisinternal
+          ),
+          enums AS (
+            SELECT t.typname AS enum_name,
+                   jsonb_agg(e.enumlabel ORDER BY e.enumsortorder) AS labels
+            FROM pg_type t JOIN pg_enum e ON e.enumtypid=t.oid
+            JOIN pg_namespace n ON n.oid=t.typnamespace
+            WHERE n.nspname='public' GROUP BY t.typname
+          ),
+          sequences AS (
+            SELECT sequence_name, data_type, start_value, minimum_value, maximum_value, increment, cycle_option
+            FROM information_schema.sequences WHERE sequence_schema='public'
+          ),
+          ext AS (SELECT extname FROM pg_extension)
+          SELECT jsonb_build_object(
+            'generated_at', now(),
+            'schema', 'public',
+            'tables', COALESCE((SELECT jsonb_agg(to_jsonb(tables_full) ORDER BY tables_full.table_name) FROM tables_full),'[]'::jsonb),
+            'views', COALESCE((SELECT jsonb_agg(jsonb_build_object('view_name',view_name,'kind',kind,'definition',definition) ORDER BY view_name) FROM views),'[]'::jsonb),
+            'functions', COALESCE((SELECT jsonb_agg(to_jsonb(funcs) ORDER BY name) FROM funcs),'[]'::jsonb),
+            'triggers', COALESCE((SELECT jsonb_agg(to_jsonb(trigs) ORDER BY trigger_name) FROM trigs),'[]'::jsonb),
+            'enums', COALESCE((SELECT jsonb_agg(to_jsonb(enums) ORDER BY enum_name) FROM enums),'[]'::jsonb),
+            'sequences', COALESCE((SELECT jsonb_agg(to_jsonb(sequences) ORDER BY sequence_name) FROM sequences),'[]'::jsonb),
+            'extensions', COALESCE((SELECT jsonb_agg(extname) FROM ext),'[]'::jsonb)
+          ) AS manifest;
+          SQL
+          psql "$DATABASE_URL" -t -A -F '' -f export_manifest.sql | jq '.' > schema/manifest.json
+
+      - name: Dump schema.sql
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          pg_dump --schema=public --schema-only --no-owner --no-privileges "$DATABASE_URL" > schema/schema.sql
+
+      - name: Create PR with updates
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore(schema): sync manifest & schema.sql"
+          title: "Schema Sync — manifest & schema.sql"
+          body: "Automated update of schema/manifest.json and schema/schema.sql."
+          branch: "chore/schema-sync"
+          add-paths: |
+            schema/manifest.json
+            schema/schema.sql
