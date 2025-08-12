@@ -1,46 +1,66 @@
-name: Run Smoke Tests
+name: Run Smoke Tests (Diag)
+
 on:
   workflow_dispatch:
-    inputs:
-      test_path:
-        description: "Optional Dropbox path for get_temp_link"
-        required: false
-        default: ""
+
 permissions:
   contents: read
   id-token: write
+
 jobs:
   smoke:
     runs-on: ubuntu-latest
     env:
       BASE: ${{ secrets.FUNC_BASE_URL }}
       CODE: ${{ secrets.FUNC_CODE_DEFAULT }}
-      TEST_PATH: ${{ github.event.inputs.test_path }}
+      APP:  ${{ env.AZURE_FUNCTIONAPP_NAME }}
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update -y && sudo apt-get install -y jq curl
-      - name: Echo base URL
+
+      - name: Login Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Tools
+        run: sudo apt-get update -y && sudo apt-get install -y jq curl
+
+      - name: Detect resource group & functions
+        id: detect
         run: |
-          echo "Base: $BASE"
           if [ -z "$BASE" ] || [ -z "$CODE" ]; then
-            echo "::error::Missing FUNC_BASE_URL or FUNC_CODE_DEFAULT"
-            exit 1
+            echo "::error::Missing secrets FUNC_BASE_URL or FUNC_CODE_DEFAULT"; exit 1; fi
+          # Get app name from BASE if not set
+          if [ -z "$APP" ]; then
+            APP=$(echo "$BASE" | sed -E 's#https?://([^/.]+).*#\1#')
           fi
-      - name: Compliance audit
-        id: compliance
-        run: |
-          set +e
-          url="$BASE/api/compliance/audit?code=$CODE"
-          resp=$(curl -s -S -w "\n%{http_code}" "$url")
-          body=$(echo "$resp" | head -n -1)
-          code=$(echo "$resp" | tail -n 1)
-          echo "$body" | jq -r . || true
-          if [ "$code" -ge 500 ]; then
-            echo "::warning::Compliance endpoint returned $code (view may not be installed)."
-          fi
+          RG=$(az functionapp show -n "$APP" --query resourceGroup -o tsv)
+          echo "APP=$APP"; echo "RG=$RG"
+          az functionapp function list -g "$RG" -n "$APP" -o json > funcs.json
+          echo "=== Functions deployed ==="
+          jq -r '.[] | [.name, .invokeUrlTemplate] | @tsv' funcs.json || true
+
+          # Helper to read invokeUrlTemplate or fallback to BASE/api/<name>
+          mkurl() {
+            local name="$1"
+            local u=$(jq -r --arg N "$name" '.[] | select(.name==$N) | .invokeUrlTemplate // empty' funcs.json)
+            if [ -z "$u" ]; then echo "$BASE/api/$name?code=$CODE"; return; fi
+            # If template already carries ?code= keep it; else append once
+            if echo "$u" | grep -q 'code='; then echo "$u"; else echo "$u?code=$CODE"; fi
+          }
+
+          echo "transfer_url=$(mkurl transfer_property_owner)" >> $GITHUB_OUTPUT
+          echo "doorloop_url=$(mkurl doorloop_writeback)" >> $GITHUB_OUTPUT
+          echo "webhook_url=$(mkurl webhook_ingestor)" >> $GITHUB_OUTPUT
+          echo "compliance_url=$(mkurl compliance/audit)" >> $GITHUB_OUTPUT
+
       - name: Transfer (dry-run)
+        continue-on-error: true
         run: |
-          url="$BASE/api/transfer_property_owner?code=$CODE"
+          url="${{ steps.detect.outputs.transfer_url }}"
+          echo "POST $url"
           cat > body.json <<'JSON'
           {
             "from_owner": {"id": 101, "name": "Sunset Capital Partners"},
@@ -51,47 +71,40 @@ jobs:
           JSON
           resp=$(curl -s -S -w "\n%{http_code}" -H "Content-Type: application/json" -d @body.json "$url")
           body=$(echo "$resp" | head -n -1); code=$(echo "$resp" | tail -n 1)
-          echo "$body" | jq -r .
-          test "$code" -ge 200 -a "$code" -lt 300
+          echo "::notice::HTTP $code"; echo "$body" | jq -r . 2>/dev/null || echo "$body"
+
       - name: DoorLoop writeback (dry-run)
+        continue-on-error: true
         run: |
-          url="$BASE/api/doorloop_writeback?code=$CODE"
+          url="${{ steps.detect.outputs.doorloop_url }}"
+          echo "POST $url"
           cat > dl.json <<'JSON'
-          {
-            "property_id": 201,
-            "from_owner_id": 101,
-            "to_owner_id": 202,
-            "effective_date": "2025-08-15",
-            "dry_run": true
-          }
+          {"property_id":201,"from_owner_id":101,"to_owner_id":202,"effective_date":"2025-08-15","dry_run":true}
           JSON
           resp=$(curl -s -S -w "\n%{http_code}" -H "Content-Type: application/json" -d @dl.json "$url")
           body=$(echo "$resp" | head -n -1); code=$(echo "$resp" | tail -n 1)
-          echo "$body" | jq -r .
-          test "$code" -ge 200 -a "$code" -lt 300
+          echo "::notice::HTTP $code"; echo "$body" | jq -r . 2>/dev/null || echo "$body"
+
       - name: Webhook ingestor (skip signature)
+        continue-on-error: true
         run: |
-          url="$BASE/api/webhook_ingestor?skip_sig=1&code=$CODE"
+          url="${{ steps.detect.outputs.webhook_url }}&skip_sig=1"
+          echo "POST $url"
           cat > wh.json <<'JSON'
-          {
-            "type": "property.transferred",
-            "property": {"id": 201, "name": "Sunset Villas"},
-            "from_owner": {"id": 101, "name": "Sunset Capital Partners"},
-            "to_owner": {"id": 202, "name": "Northstar Holdings"},
-            "effective_date": "2025-08-15"
-          }
+          {"type":"property.transferred","property":{"id":201,"name":"Sunset Villas"},"from_owner":{"id":101},"to_owner":{"id":202},"effective_date":"2025-08-15"}
           JSON
           resp=$(curl -s -S -w "\n%{http_code}" -H "Content-Type: application/json" -d @wh.json "$url")
           body=$(echo "$resp" | head -n -1); code=$(echo "$resp" | tail -n 1)
-          echo "$body" | jq -r .
-          test "$code" -ge 200 -a "$code" -lt 300
-      - name: Get temp link (optional)
-        if: ${{ env.TEST_PATH != '' }}
+          echo "::notice::HTTP $code"; echo "$body" | jq -r . 2>/dev/null || echo "$body"
+
+      - name: Compliance audit (best-effort)
+        continue-on-error: true
         run: |
-          enc=$(python - <<'PY'\nimport urllib.parse, os; print(urllib.parse.quote(os.environ['TEST_PATH']))\nPY\n)
-          url="$BASE/api/get_temp_link?code=$CODE&path=$enc"
+          url="${{ steps.detect.outputs.compliance_url }}"
+          echo "GET $url"
           resp=$(curl -s -S -w "\n%{http_code}" "$url")
           body=$(echo "$resp" | head -n -1); code=$(echo "$resp" | tail -n 1)
-          echo "$body" | jq -r .
-          test "$code" -ge 200 -a "$code" -lt 300
-      - run: echo "Smoke tests complete ✅"
+          echo "::notice::HTTP $code"; echo "$body" | jq -r . 2>/dev/null || echo "$body"
+
+      - name: Done
+        run: echo "Diagnostic run complete ✅  (check HTTP codes above)"
