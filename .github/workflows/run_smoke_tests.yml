@@ -8,9 +8,13 @@ permissions:
   contents: read
 
 env:
-  # These two must be set as REPO secrets (Settings → Secrets and variables → Actions)
-  BASE: ${{ secrets.FUNC_BASE_URL }}          # e.g. https://altus-dropbox-integration-ckgefmatgbebd4cz.centralus-01.azurewebsites.net
-  CODE: ${{ secrets.FUNC_CODE_DEFAULT }}      # default “Function key” value (just the key, no ?code=)
+  # Required
+  BASE: ${{ secrets.FUNC_BASE_URL }}          # e.g. https://<something>.azurewebsites.net
+  CODE: ${{ secrets.FUNC_CODE_DEFAULT }}      # default Function key (no ?code=)
+
+  # Optional helpers (use if discovery fails)
+  APP_OVR: ${{ secrets.FUNC_APP_NAME }}       # exact Function App name as shown in Azure portal
+  RG_OVR:  ${{ secrets.AZURE_RESOURCE_GROUP }}# resource group name (optional)
 
 jobs:
   smoke:
@@ -33,7 +37,8 @@ jobs:
         env:
           BASE: ${{ env.BASE }}
           CODE: ${{ env.CODE }}
-          RG_OVR: ${{ secrets.AZURE_RESOURCE_GROUP }} # optional override
+          APP_OVR: ${{ env.APP_OVR }}
+          RG_OVR:  ${{ env.RG_OVR }}
         run: |
           set -euo pipefail
 
@@ -42,10 +47,31 @@ jobs:
 
           echo "BASE: $BASE"
           HOST=$(echo "$BASE" | sed -E 's#https?://([^/]+).*#\1#')
-          APP=$(echo "$HOST" | sed -E 's#^([^.]+).*#\1#')
           echo "Derived HOST: $HOST"
-          echo "Derived APP:  $APP"
 
+          # 1) Resolve Function App name
+          if [ -n "${APP_OVR}" ]; then
+            APP="$APP_OVR"
+            echo "Using APP override: $APP"
+          else
+            echo "Discovering app name from host…"
+            APP=$(az resource list --resource-type Microsoft.Web/sites \
+                  --query "[?properties.defaultHostName=='$HOST'].name | [0]" -o tsv)
+            if [ -z "$APP" ]; then
+              APP=$(az resource list --resource-type Microsoft.Web/sites \
+                    --query "[?contains(properties.defaultHostName, '$HOST')].name | [0]" -o tsv)
+            fi
+            if [ -z "$APP" ]; then
+              echo "::group::Debug web sites"
+              az resource list --resource-type Microsoft.Web/sites -o table || true
+              echo "::endgroup::"
+              echo "::error::Unable to resolve Function App name from host '$HOST'. Add secret FUNC_APP_NAME."
+              exit 1
+            fi
+          fi
+          echo "Function App: $APP"
+
+          # 2) Resolve Resource Group
           if [ -n "${RG_OVR}" ]; then
             RG="$RG_OVR"
             echo "Using RG override: $RG"
@@ -55,26 +81,19 @@ jobs:
                  --query "[?name=='$APP'].resourceGroup | [0]" -o tsv)
             if [ -z "$RG" ]; then
               RG=$(az resource list --resource-type Microsoft.Web/sites \
-                   --query "[?properties.defaultHostName=='$HOST'].resourceGroup | [0]" -o tsv)
+                   --query "[?contains(properties.defaultHostName, '$HOST') && name=='$APP'].resourceGroup | [0]" -o tsv)
             fi
             if [ -z "$RG" ]; then
-              RG=$(az resource list --resource-type Microsoft.Web/sites \
-                   --query "[?contains(properties.defaultHostName, '$HOST')].resourceGroup | [0]" -o tsv)
+              echo "::group::Debug web sites"
+              az resource list --resource-type Microsoft.Web/sites -o table || true
+              echo "::endgroup::"
+              echo "::error::Could not discover resource group for app '$APP'. Add secret AZURE_RESOURCE_GROUP."
+              exit 1
             fi
           fi
-
-          if [ -z "$RG" ]; then
-            echo "::group::Debug: Web sites in subscription"
-            az resource list --resource-type Microsoft.Web/sites -o table || true
-            echo "::endgroup::"
-            echo "::error::Could not discover resource group for app '$APP' (host: $HOST). Check FUNC_BASE_URL and subscription."
-            exit 1
-          fi
-
-          echo "Function App: $APP"
           echo "Resource Group: $RG"
 
-          # List functions
+          # 3) List functions
           az functionapp function list -g "$RG" -n "$APP" -o json > funcs.json
           echo "=== Deployed functions ==="
           jq -r '.[] | [.name, .invokeUrlTemplate] | @tsv' funcs.json || true
@@ -90,7 +109,7 @@ jobs:
             fi
           }
 
-          # Export URLs for the functions that actually exist
+          # Export URLs for functions that actually exist
           for N in dbx_health transfer_property_owner doorloop_writeback webhook_ingestor dropbox_upload; do
             if jq -e --arg N "$N" '.[] | select(.name==$N)' funcs.json >/dev/null; then
               echo "${N}_url=$(mkurl "$N")" >> $GITHUB_OUTPUT
