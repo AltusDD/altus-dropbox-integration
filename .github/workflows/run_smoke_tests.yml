@@ -4,46 +4,74 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
   id-token: write
+  contents: read
+
+env:
+  # These two must be set as REPO secrets (Settings → Secrets and variables → Actions)
+  BASE: ${{ secrets.FUNC_BASE_URL }}          # e.g. https://altus-dropbox-integration-ckgefmatgbebd4cz.centralus-01.azurewebsites.net
+  CODE: ${{ secrets.FUNC_CODE_DEFAULT }}      # default “Function key” value (just the key, no ?code=)
 
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    env:
-      BASE: ${{ secrets.FUNC_BASE_URL }}        # e.g., https://<your-app>.azurewebsites.net
-      CODE: ${{ secrets.FUNC_CODE_DEFAULT }}    # default host key (just the key string)
+
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate required secrets
-        run: |
-          if [ -z "$BASE" ] || [ -z "$CODE" ]; then
-            echo "::error::Missing secrets FUNC_BASE_URL or FUNC_CODE_DEFAULT"; exit 1; fi
-
-      - name: Login Azure (OIDC)
+      - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Tools
-        run: sudo apt-get update -y && sudo apt-get install -y jq curl
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Detect Function App and function URLs
         id: detect
         shell: bash
+        env:
+          BASE: ${{ env.BASE }}
+          CODE: ${{ env.CODE }}
+          RG_OVR: ${{ secrets.AZURE_RESOURCE_GROUP }} # optional override
         run: |
-          # Derive APP name from BASE
-          APP=$(echo "$BASE" | sed -E 's#https?://([^/.]+).*#\1#')
-          echo "Function App: $APP"
+          set -euo pipefail
 
-          # Find resource group (works without knowing RG up front)
-          RG=$(az functionapp list --query "[?name=='$APP'].resourceGroup | [0]" -o tsv)
-          if [ -z "$RG" ]; then
-            echo "::error::Could not find resource group for app $APP"; exit 1
+          BASE="${BASE:?FUNC_BASE_URL secret is missing}"
+          CODE="${CODE:?FUNC_CODE_DEFAULT secret is missing}"
+
+          echo "BASE: $BASE"
+          HOST=$(echo "$BASE" | sed -E 's#https?://([^/]+).*#\1#')
+          APP=$(echo "$HOST" | sed -E 's#^([^.]+).*#\1#')
+          echo "Derived HOST: $HOST"
+          echo "Derived APP:  $APP"
+
+          if [ -n "${RG_OVR}" ]; then
+            RG="$RG_OVR"
+            echo "Using RG override: $RG"
+          else
+            echo "Discovering resource group…"
+            RG=$(az resource list --resource-type Microsoft.Web/sites \
+                 --query "[?name=='$APP'].resourceGroup | [0]" -o tsv)
+            if [ -z "$RG" ]; then
+              RG=$(az resource list --resource-type Microsoft.Web/sites \
+                   --query "[?properties.defaultHostName=='$HOST'].resourceGroup | [0]" -o tsv)
+            fi
+            if [ -z "$RG" ]; then
+              RG=$(az resource list --resource-type Microsoft.Web/sites \
+                   --query "[?contains(properties.defaultHostName, '$HOST')].resourceGroup | [0]" -o tsv)
+            fi
           fi
+
+          if [ -z "$RG" ]; then
+            echo "::group::Debug: Web sites in subscription"
+            az resource list --resource-type Microsoft.Web/sites -o table || true
+            echo "::endgroup::"
+            echo "::error::Could not discover resource group for app '$APP' (host: $HOST). Check FUNC_BASE_URL and subscription."
+            exit 1
+          fi
+
+          echo "Function App: $APP"
           echo "Resource Group: $RG"
 
           # List functions
@@ -53,7 +81,8 @@ jobs:
 
           mkurl() {
             local name="$1"
-            local u=$(jq -r --arg N "$name" '.[] | select(.name==$N) | .invokeUrlTemplate // empty' funcs.json)
+            local u
+            u=$(jq -r --arg N "$name" '.[] | select(.name==$N) | .invokeUrlTemplate // empty' funcs.json)
             if [ -z "$u" ] || [ "$u" = "null" ]; then
               echo "$BASE/api/$name?code=$CODE"
             else
@@ -61,30 +90,30 @@ jobs:
             fi
           }
 
-          # Export URLs only for functions that exist
-          for N in dbx_health transfer_property_owner doorloop_writeback webhook_ingestor; do
-            H=$(jq -r --arg N "$N" '.[] | select(.name==$N) | .name // empty' funcs.json)
-            if [ -n "$H" ]; then
+          # Export URLs for the functions that actually exist
+          for N in dbx_health transfer_property_owner doorloop_writeback webhook_ingestor dropbox_upload; do
+            if jq -e --arg N "$N" '.[] | select(.name==$N)' funcs.json >/dev/null; then
               echo "${N}_url=$(mkurl "$N")" >> $GITHUB_OUTPUT
             fi
           done
 
-      - name: Health check (dbx_health)
-        shell: bash
+      - name: Show discovered URLs
         run: |
-          if [ -z "${{ steps.detect.outputs.dbx_health_url }}" ]; then
-            echo "::warning::dbx_health not found; skipping."
-          else
-            url="${{ steps.detect.outputs.dbx_health_url }}"
-            echo "GET $url"
-            resp=$(curl -s -S -w "\n%{http_code}" "$url")
-            body=$(echo "$resp" | head -n -1); code=$(echo "$resp" | tail -n 1)
-            echo "::notice::HTTP $code"
-            echo "$body" | jq . 2>/dev/null || echo "$body"
-          fi
+          echo "dbx_health:              ${{ steps.detect.outputs.dbx_health_url }}"
+          echo "transfer_property_owner: ${{ steps.detect.outputs.transfer_property_owner_url }}"
+          echo "dropbox_upload:          ${{ steps.detect.outputs.dropbox_upload_url }}"
+          echo "webhook_ingestor:        ${{ steps.detect.outputs.webhook_ingestor_url }}"
+          echo "doorloop_writeback:      ${{ steps.detect.outputs.doorloop_writeback_url }}"
 
-      - name: Transfer (dry-run)
-        if: steps.detect.outputs.transfer_property_owner_url != ''
+      - name: Health check (dbx_health)
+        if: ${{ steps.detect.outputs.dbx_health_url != '' }}
+        run: |
+          url="${{ steps.detect.outputs.dbx_health_url }}"
+          echo "GET $url"
+          curl -sS "$url" | jq -r .
+
+      - name: Dry-run ownership transfer (no changes)
+        if: ${{ steps.detect.outputs.transfer_property_owner_url != '' }}
         shell: bash
         run: |
           url="${{ steps.detect.outputs.transfer_property_owner_url }}"
@@ -94,54 +123,38 @@ jobs:
             "from_owner": {"id": 101, "name": "Sunset Capital Partners"},
             "to_owner":   {"id": 202, "name": "Northstar Holdings"},
             "property":   {"id": 201, "name": "Sunset Villas"},
-            "effective_date": "2025-08-15",
             "dry_run": true
           }
           JSON
           resp=$(curl -s -S -w "\n%{http_code}" -H "Content-Type: application/json" -d @body.json "$url")
           body=$(echo "$resp" | head -n -1); code=$(echo "$resp" | tail -n 1)
-          echo "::notice::HTTP $code"
-          echo "$body" | jq . 2>/dev/null || echo "$body"
+          echo "$body" | jq -r .
+          test "$code" -ge 200 -a "$code" -lt 300
 
-      - name: DoorLoop writeback (dry-run)
-        if: steps.detect.outputs.doorloop_writeback_url != ''
+      - name: Upload a tiny smoke file to Dropbox
+        if: ${{ steps.detect.outputs.dropbox_upload_url != '' }}
         shell: bash
         run: |
-          url="${{ steps.detect.outputs.doorloop_writeback_url }}"
-          echo "POST $url"
-          cat > dl.json <<'JSON'
+          url="${{ steps.detect.outputs.dropbox_upload_url }}"
+          printf "hello from smoke %s\n" "$(date -u +%s)" > msg.txt
+          b64=$(base64 -w0 msg.txt 2>/dev/null || base64 msg.txt)
+          ts=$(date +%s)
+          cat > body.json <<JSON
           {
-            "property_id": 201,
-            "from_owner_id": 101,
-            "to_owner_id": 202,
-            "effective_date": "2025-08-15",
-            "dry_run": true
+            "entity_type": "LeaseSigned",
+            "meta": {
+              "owner_id": 101,
+              "owner_name": "Sunset Capital Partners",
+              "property_id": 201,
+              "property_name": "Sunset Villas",
+              "unit_id": 5,
+              "unit_name": "unit-5b-5",
+              "lease_id": 6001,
+              "tenant_slug": "jane-smith"
+            },
+            "original_filename": "smoke-\(ts).txt",
+            "file_base64": "$b64"
           }
           JSON
-          resp=$(curl -s -S -w "\n%{http_code}" -H "Content-Type: application/json" -d @dl.json "$url")
-          body=$(echo "$resp" | head -n -1); code=$(echo "$resp" | tail -n 1)
-          echo "::notice::HTTP $code"
-          echo "$body" | jq . 2>/dev/null || echo "$body"
-
-      - name: Webhook ingestor (signature bypass for test)
-        if: steps.detect.outputs.webhook_ingestor_url != ''
-        shell: bash
-        run: |
-          url="${{ steps.detect.outputs.webhook_ingestor_url }}&skip_sig=1"
           echo "POST $url"
-          cat > wh.json <<'JSON'
-          {
-            "type":"property.transferred",
-            "property":{"id":201,"name":"Sunset Villas"},
-            "from_owner":{"id":101,"name":"Sunset Capital Partners"},
-            "to_owner":{"id":202,"name":"Northstar Holdings"},
-            "effective_date":"2025-08-15"
-          }
-          JSON
-          resp=$(curl -s -S -w "\n%{http_code}" -H "Content-Type: application/json" -d @wh.json "$url")
-          body=$(echo "$resp" | head -n -1); code=$(echo "$resp" | tail -n 1)
-          echo "::notice::HTTP $code"
-          echo "$body" | jq . 2>/dev/null || echo "$body"
-
-      - name: Done
-        run: echo "Diagnostic run complete ✅  (review HTTP codes & bodies above)"
+          curl -sS -H "Content-Type: application/json" -d @body.json "$url" | jq -r .
