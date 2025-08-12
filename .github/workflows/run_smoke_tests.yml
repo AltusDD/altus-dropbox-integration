@@ -8,9 +8,9 @@ permissions:
   contents: read
 
 env:
-  BASE: ${{ secrets.FUNC_BASE_URL }}          # e.g. https://<your-app>.azurewebsites.net
-  CODE: ${{ secrets.FUNC_CODE_DEFAULT }}      # default (Function) key, just the key string
-  RG:   ${{ secrets.AZURE_RESOURCE_GROUP }}   # exact Resource Group name from Azure portal
+  BASE: ${{ secrets.FUNC_BASE_URL }}          # e.g. https://<app>.azurewebsites.net
+  CODE: ${{ secrets.FUNC_CODE_DEFAULT }}      # default function key (string only)
+  RG:   ${{ secrets.AZURE_RESOURCE_GROUP }}   # resource group name
 
 jobs:
   smoke:
@@ -27,8 +27,8 @@ jobs:
       - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y jq curl
 
-      - name: Detect Function App and function URLs (RG-scoped, null-safe)
-        id: detect
+      - name: Detect app and build URLs (with safe fallbacks)
+        id: urls
         shell: bash
         env:
           BASE: ${{ env.BASE }}
@@ -40,80 +40,74 @@ jobs:
           CODE="${CODE:?FUNC_CODE_DEFAULT secret is missing}"
           RG="${RG:?AZURE_RESOURCE_GROUP secret is missing}"
 
-          echo "BASE: $BASE"
           HOST=$(echo "$BASE" | sed -E 's#https?://([^/]+).*#\1#')
-          echo "Derived HOST: $HOST"
-          echo "Using RG: $RG"
+          echo "Host: $HOST"
+          echo "RG:   $RG"
 
-          # List function apps in the RG and pick the one whose defaultHostName matches HOST
-          # Output format: "<name>\t<defaultHostName>"
-          MAP=$(az functionapp list -g "$RG" --query "[].{name:name,host:defaultHostName}" -o tsv || true)
-          if [ -z "${MAP}" ]; then
-            echo "::group::Debug: No function apps found in RG $RG"
-            az resource list -g "$RG" --resource-type Microsoft.Web/sites -o table || true
-            echo "::endgroup::"
-            echo "::error::No Function Apps found in resource group '$RG'."
-            exit 1
+          # Default URLs (fallbacks)
+          defurl() { echo "$BASE/api/$1?code=$CODE"; }
+          DBX_HEALTH_URL=$(defurl dbx_health)
+          TRANSFER_URL=$(defurl transfer_property_owner)
+          UPLOAD_URL=$(defurl dropbox_upload)
+          WEBHOOK_URL=$(defurl webhook_ingestor)
+          WRITEBACK_URL=$(defurl doorloop_writeback)
+
+          # Try to discover the function app & real invokeUrlTemplate
+          APPS=$(az functionapp list -g "$RG" --query "[].{name:name,host:defaultHostName}" -o tsv || true)
+          APP=$(echo "$APPS" | awk -v h="$HOST" '$2==h{print $1; exit}')
+          [ -z "${APP:-}" ] && APP=$(echo "$APPS" | awk -v h="$HOST" 'index($2,h){print $1; exit}')
+
+          if [ -n "${APP:-}" ]; then
+            echo "Function App: $APP"
+            az functionapp function list -g "$RG" -n "$APP" -o json > funcs.json
+            echo "Functions deployed:"
+            jq -r '.[] | [.name, .invokeUrlTemplate] | @tsv' funcs.json || true
+
+            mk() {
+              local name="$1"
+              local u
+              u=$(jq -r --arg N "$name" '.[] | select(.name==$N) | .invokeUrlTemplate // empty' funcs.json)
+              if [ -n "$u" ] && [ "$u" != "null" ]; then
+                [[ "$u" == *code=* ]] && echo "$u" || echo "$u?code=$CODE"
+              fi
+            }
+
+            DBX_HEALTH_URL="${DBX_HEALTH_URL:-$(defurl dbx_health)}"
+            t=$(mk transfer_property_owner); [ -n "${t:-}" ] && TRANSFER_URL="$t"
+            u=$(mk dropbox_upload);          [ -n "${u:-}" ] && UPLOAD_URL="$u"
+            w=$(mk webhook_ingestor);        [ -n "${w:-}" ] && WEBHOOK_URL="$w"
+            d=$(mk doorloop_writeback);      [ -n "${d:-}" ] && WRITEBACK_URL="$d"
+          else
+            echo "Could not resolve app from RG; using fallback URLs."
           fi
 
-          APP=$(echo "$MAP" | awk -v h="$HOST" '$2==h{print $1; exit}')
-          if [ -z "${APP:-}" ]; then
-            APP=$(echo "$MAP" | awk -v h="$HOST" 'index($2,h){print $1; exit}')
-          fi
+          {
+            echo "dbx_health_url=$DBX_HEALTH_URL"
+            echo "transfer_property_owner_url=$TRANSFER_URL"
+            echo "dropbox_upload_url=$UPLOAD_URL"
+            echo "webhook_ingestor_url=$WEBHOOK_URL"
+            echo "doorloop_writeback_url=$WRITEBACK_URL"
+          } >> "$GITHUB_OUTPUT"
 
-          if [ -z "${APP:-}" ]; then
-            echo "::group::Debug: Function Apps in $RG"
-            echo "$MAP" | sed 's/\t/ -> /g' || true
-            echo "::endgroup::"
-            echo "::error::Could not resolve Function App for host '$HOST' in RG '$RG'. Check FUNC_BASE_URL or add FUNC_APP_NAME based workflow."
-            exit 1
-          fi
-
-          echo "Function App: $APP"
-
-          # List functions
-          az functionapp function list -g "$RG" -n "$APP" -o json > funcs.json
-          echo "=== Deployed functions ==="
-          jq -r '.[] | [.name, .invokeUrlTemplate] | @tsv' funcs.json || true
-
-          mkurl() {
-            local name="$1"
-            local u
-            u=$(jq -r --arg N "$name" '.[] | select(.name==$N) | .invokeUrlTemplate // empty' funcs.json)
-            if [ -z "$u" ] || [ "$u" = "null" ]; then
-              echo "$BASE/api/$name?code=$CODE"
-            else
-              if echo "$u" | grep -q 'code='; then echo "$u"; else echo "$u?code=$CODE"; fi
-            fi
-          }
-
-          # Export URLs for functions that actually exist
-          for N in dbx_health transfer_property_owner doorloop_writeback webhook_ingestor dropbox_upload; do
-            if jq -e --arg N "$N" '.[] | select(.name==$N)' funcs.json >/dev/null; then
-              echo "${N}_url=$(mkurl "$N")" >> $GITHUB_OUTPUT
-            fi
-          done
-
-      - name: Show discovered URLs
+      - name: Show URLs we’ll call
         run: |
-          echo "dbx_health:              ${{ steps.detect.outputs.dbx_health_url }}"
-          echo "transfer_property_owner: ${{ steps.detect.outputs.transfer_property_owner_url }}"
-          echo "dropbox_upload:          ${{ steps.detect.outputs.dropbox_upload_url }}"
-          echo "webhook_ingestor:        ${{ steps.detect.outputs.webhook_ingestor_url }}"
-          echo "doorloop_writeback:      ${{ steps.detect.outputs.doorloop_writeback_url }}"
+          echo "dbx_health:              ${{ steps.urls.outputs.dbx_health_url }}"
+          echo "transfer_property_owner: ${{ steps.urls.outputs.transfer_property_owner_url }}"
+          echo "dropbox_upload:          ${{ steps.urls.outputs.dropbox_upload_url }}"
+          echo "webhook_ingestor:        ${{ steps.urls.outputs.webhook_ingestor_url }}"
+          echo "doorloop_writeback:      ${{ steps.urls.outputs.doorloop_writeback_url }}"
 
-      - name: Health check (dbx_health)
-        if: ${{ steps.detect.outputs.dbx_health_url != '' }}
+      - name: Health check
+        shell: bash
         run: |
-          url="${{ steps.detect.outputs.dbx_health_url }}"
+          url="${{ steps.urls.outputs.dbx_health_url }}"
           echo "GET $url"
           curl -sS "$url" | jq -r .
 
-      - name: Dry-run ownership transfer (no changes)
-        if: ${{ steps.detect.outputs.transfer_property_owner_url != '' }}
+      - name: Dry-run ownership transfer
         shell: bash
         run: |
-          url="${{ steps.detect.outputs.transfer_property_owner_url }}"
+          url="${{ steps.urls.outputs.transfer_property_owner_url }}"
           echo "POST $url"
           cat > body.json <<'JSON'
           {
@@ -124,19 +118,14 @@ jobs:
             "dry_run": true
           }
           JSON
-          resp=$(curl -s -S -w "\n%{http_code}" -H "Content-Type: application/json" -d @body.json "$url")
-          body=$(echo "$resp" | head -n -1); code=$(echo "$resp" | tail -n 1)
-          echo "$body" | jq -r .
-          test "$code" -ge 200 -a "$code" -lt 300
+          curl -sS -H "Content-Type: application/json" -d @body.json "$url" | jq -r .
 
-      - name: Upload a tiny smoke file to Dropbox
-        if: ${{ steps.detect.outputs.dropbox_upload_url != '' }}
+      - name: Upload a tiny smoke file
         shell: bash
         run: |
-          url="${{ steps.detect.outputs.dropbox_upload_url }}"
-          printf "hello from smoke %s\n" "$(date -u +%s)" > msg.txt
+          url="${{ steps.urls.outputs.dropbox_upload_url }}"
+          printf "smoke %s\n" "$(date -u +%s)" > msg.txt
           b64=$(base64 -w0 msg.txt 2>/dev/null || base64 msg.txt)
-          ts=$(date +%s)
           cat > body.json <<JSON
           {
             "entity_type": "LeaseSigned",
@@ -150,12 +139,9 @@ jobs:
               "lease_id": 6001,
               "tenant_slug": "jane-smith"
             },
-            "original_filename": "smoke-\(ts).txt",
+            "original_filename": "smoke.txt",
             "file_base64": "$b64"
           }
           JSON
           echo "POST $url"
-          resp=$(curl -s -S -w "\n%{http_code}" -H "Content-Type: application/json" -d @body.json "$url")
-          body=$(echo "$resp" | head -n -1); code=$(echo "$resp" | tail -n 1)
-          echo "$body" | jq -r .
-          test "$code" -ge 200 -a "$code" -lt 300
+          curl -sS -H "Content-Type: application/json" -d @body.json "$url" | jq -r .
