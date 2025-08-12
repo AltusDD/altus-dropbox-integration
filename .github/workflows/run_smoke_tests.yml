@@ -8,13 +8,9 @@ permissions:
   contents: read
 
 env:
-  # Required
   BASE: ${{ secrets.FUNC_BASE_URL }}          # e.g. https://<something>.azurewebsites.net
   CODE: ${{ secrets.FUNC_CODE_DEFAULT }}      # default Function key (no ?code=)
-
-  # Optional helpers (use if discovery fails)
-  APP_OVR: ${{ secrets.FUNC_APP_NAME }}       # exact Function App name as shown in Azure portal
-  RG_OVR:  ${{ secrets.AZURE_RESOURCE_GROUP }}# resource group name (optional)
+  RG_OVR: ${{ secrets.AZURE_RESOURCE_GROUP }} # REQUIRED for this variant (exact RG name)
 
 jobs:
   smoke:
@@ -31,69 +27,43 @@ jobs:
       - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Detect Function App and function URLs
+      - name: Detect Function App and function URLs (RG-scoped)
         id: detect
         shell: bash
         env:
           BASE: ${{ env.BASE }}
           CODE: ${{ env.CODE }}
-          APP_OVR: ${{ env.APP_OVR }}
-          RG_OVR:  ${{ env.RG_OVR }}
+          RG:   ${{ env.RG_OVR }}
         run: |
           set -euo pipefail
-
           BASE="${BASE:?FUNC_BASE_URL secret is missing}"
           CODE="${CODE:?FUNC_CODE_DEFAULT secret is missing}"
+          RG="${RG:?AZURE_RESOURCE_GROUP secret is missing}"
 
           echo "BASE: $BASE"
           HOST=$(echo "$BASE" | sed -E 's#https?://([^/]+).*#\1#')
           echo "Derived HOST: $HOST"
+          echo "Using RG: $RG"
 
-          # 1) Resolve Function App name
-          if [ -n "${APP_OVR}" ]; then
-            APP="$APP_OVR"
-            echo "Using APP override: $APP"
-          else
-            echo "Discovering app name from host…"
-            APP=$(az resource list --resource-type Microsoft.Web/sites \
-                  --query "[?properties.defaultHostName=='$HOST'].name | [0]" -o tsv)
-            if [ -z "$APP" ]; then
-              APP=$(az resource list --resource-type Microsoft.Web/sites \
-                    --query "[?contains(properties.defaultHostName, '$HOST')].name | [0]" -o tsv)
-            fi
-            if [ -z "$APP" ]; then
-              echo "::group::Debug web sites"
-              az resource list --resource-type Microsoft.Web/sites -o table || true
-              echo "::endgroup::"
-              echo "::error::Unable to resolve Function App name from host '$HOST'. Add secret FUNC_APP_NAME."
-              exit 1
-            fi
+          # Find the app *by* defaultHostName within the provided RG
+          APP=$(az resource list -g "$RG" --resource-type Microsoft.Web/sites \
+                --query "[?properties.defaultHostName=='$HOST'].name | [0]" -o tsv)
+          if [ -z "$APP" ]; then
+            APP=$(az resource list -g "$RG" --resource-type Microsoft.Web/sites \
+                  --query "[?contains(properties.defaultHostName, '$HOST')].name | [0]" -o tsv)
           fi
+          if [ -z "$APP" ]; then
+            echo "::group::Debug: Sites in RG $RG"
+            az resource list -g "$RG" --resource-type Microsoft.Web/sites -o table || true
+            echo "::endgroup::"
+            echo "::error::Could not resolve Function App in RG '$RG' for host '$HOST'. Check BASE/RG or add FUNC_APP_NAME."
+            exit 1
+          fi
+
           echo "Function App: $APP"
-
-          # 2) Resolve Resource Group
-          if [ -n "${RG_OVR}" ]; then
-            RG="$RG_OVR"
-            echo "Using RG override: $RG"
-          else
-            echo "Discovering resource group…"
-            RG=$(az resource list --resource-type Microsoft.Web/sites \
-                 --query "[?name=='$APP'].resourceGroup | [0]" -o tsv)
-            if [ -z "$RG" ]; then
-              RG=$(az resource list --resource-type Microsoft.Web/sites \
-                   --query "[?contains(properties.defaultHostName, '$HOST') && name=='$APP'].resourceGroup | [0]" -o tsv)
-            fi
-            if [ -z "$RG" ]; then
-              echo "::group::Debug web sites"
-              az resource list --resource-type Microsoft.Web/sites -o table || true
-              echo "::endgroup::"
-              echo "::error::Could not discover resource group for app '$APP'. Add secret AZURE_RESOURCE_GROUP."
-              exit 1
-            fi
-          fi
           echo "Resource Group: $RG"
 
-          # 3) List functions
+          # List functions
           az functionapp function list -g "$RG" -n "$APP" -o json > funcs.json
           echo "=== Deployed functions ==="
           jq -r '.[] | [.name, .invokeUrlTemplate] | @tsv' funcs.json || true
@@ -142,6 +112,7 @@ jobs:
             "from_owner": {"id": 101, "name": "Sunset Capital Partners"},
             "to_owner":   {"id": 202, "name": "Northstar Holdings"},
             "property":   {"id": 201, "name": "Sunset Villas"},
+            "effective_date": "2025-08-15",
             "dry_run": true
           }
           JSON
