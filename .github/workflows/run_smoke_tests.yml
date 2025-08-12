@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 env:
-  BASE: ${{ secrets.FUNC_BASE_URL }}          # e.g. https://<app>.azurewebsites.net
+  BASE: ${{ secrets.FUNC_BASE_URL }}          # https://<app>.azurewebsites.net
   CODE: ${{ secrets.FUNC_CODE_DEFAULT }}      # default function key (string only)
   RG:   ${{ secrets.AZURE_RESOURCE_GROUP }}   # resource group name
 
@@ -44,15 +44,15 @@ jobs:
           echo "Host: $HOST"
           echo "RG:   $RG"
 
-          # Default URLs (fallbacks)
+          # Fallbacks
           defurl() { echo "$BASE/api/$1?code=$CODE"; }
           DBX_HEALTH_URL=$(defurl dbx_health)
-          TRANSFER_URL=$(defurl transfer_property_owner)
           UPLOAD_URL=$(defurl dropbox_upload)
+          TRANSFER_URL=$(defurl transfer_property_owner)
           WEBHOOK_URL=$(defurl webhook_ingestor)
           WRITEBACK_URL=$(defurl doorloop_writeback)
 
-          # Try to discover the function app & real invokeUrlTemplate
+          # Try to resolve the app in the RG
           APPS=$(az functionapp list -g "$RG" --query "[].{name:name,host:defaultHostName}" -o tsv || true)
           APP=$(echo "$APPS" | awk -v h="$HOST" '$2==h{print $1; exit}')
           [ -z "${APP:-}" ] && APP=$(echo "$APPS" | awk -v h="$HOST" 'index($2,h){print $1; exit}')
@@ -72,19 +72,19 @@ jobs:
               fi
             }
 
-            DBX_HEALTH_URL="${DBX_HEALTH_URL:-$(defurl dbx_health)}"
+            h=$(mk dbx_health);         [ -n "${h:-}" ] && DBX_HEALTH_URL="$h"
+            u=$(mk dropbox_upload);     [ -n "${u:-}" ] && UPLOAD_URL="$u"
             t=$(mk transfer_property_owner); [ -n "${t:-}" ] && TRANSFER_URL="$t"
-            u=$(mk dropbox_upload);          [ -n "${u:-}" ] && UPLOAD_URL="$u"
-            w=$(mk webhook_ingestor);        [ -n "${w:-}" ] && WEBHOOK_URL="$w"
-            d=$(mk doorloop_writeback);      [ -n "${d:-}" ] && WRITEBACK_URL="$d"
+            w=$(mk webhook_ingestor);   [ -n "${w:-}" ] && WEBHOOK_URL="$w"
+            d=$(mk doorloop_writeback); [ -n "${d:-}" ] && WRITEBACK_URL="$d"
           else
             echo "Could not resolve app from RG; using fallback URLs."
           fi
 
           {
             echo "dbx_health_url=$DBX_HEALTH_URL"
-            echo "transfer_property_owner_url=$TRANSFER_URL"
             echo "dropbox_upload_url=$UPLOAD_URL"
+            echo "transfer_property_owner_url=$TRANSFER_URL"
             echo "webhook_ingestor_url=$WEBHOOK_URL"
             echo "doorloop_writeback_url=$WRITEBACK_URL"
           } >> "$GITHUB_OUTPUT"
@@ -92,35 +92,21 @@ jobs:
       - name: Show URLs we’ll call
         run: |
           echo "dbx_health:              ${{ steps.urls.outputs.dbx_health_url }}"
-          echo "transfer_property_owner: ${{ steps.urls.outputs.transfer_property_owner_url }}"
           echo "dropbox_upload:          ${{ steps.urls.outputs.dropbox_upload_url }}"
+          echo "transfer_property_owner: ${{ steps.urls.outputs.transfer_property_owner_url }}"
           echo "webhook_ingestor:        ${{ steps.urls.outputs.webhook_ingestor_url }}"
           echo "doorloop_writeback:      ${{ steps.urls.outputs.doorloop_writeback_url }}"
 
       - name: Health check
+        if: ${{ steps.urls.outputs.dbx_health_url != '' }}
         shell: bash
         run: |
           url="${{ steps.urls.outputs.dbx_health_url }}"
           echo "GET $url"
           curl -sS "$url" | jq -r .
 
-      - name: Dry-run ownership transfer
-        shell: bash
-        run: |
-          url="${{ steps.urls.outputs.transfer_property_owner_url }}"
-          echo "POST $url"
-          cat > body.json <<'JSON'
-          {
-            "from_owner": {"id": 101, "name": "Sunset Capital Partners"},
-            "to_owner":   {"id": 202, "name": "Northstar Holdings"},
-            "property":   {"id": 201, "name": "Sunset Villas"},
-            "effective_date": "2025-08-15",
-            "dry_run": true
-          }
-          JSON
-          curl -sS -H "Content-Type: application/json" -d @body.json "$url" | jq -r .
-
       - name: Upload a tiny smoke file
+        if: ${{ steps.urls.outputs.dropbox_upload_url != '' }}
         shell: bash
         run: |
           url="${{ steps.urls.outputs.dropbox_upload_url }}"
@@ -144,4 +130,22 @@ jobs:
           }
           JSON
           echo "POST $url"
+          curl -sS -H "Content-Type: application/json" -d @body.json "$url" | jq -r .
+
+      # The following are present only if those functions exist in this app
+      - name: Dry-run ownership transfer
+        if: ${{ steps.urls.outputs.transfer_property_owner_url != '' }}
+        shell: bash
+        run: |
+          url="${{ steps.urls.outputs.transfer_property_owner_url }}"
+          echo "POST $url"
+          cat > body.json <<'JSON'
+          {
+            "from_owner": {"id": 101, "name": "Sunset Capital Partners"},
+            "to_owner":   {"id": 202, "name": "Northstar Holdings"},
+            "property":   {"id": 201, "name": "Sunset Villas"},
+            "effective_date": "2025-08-15",
+            "dry_run": true
+          }
+          JSON
           curl -sS -H "Content-Type: application/json" -d @body.json "$url" | jq -r .
