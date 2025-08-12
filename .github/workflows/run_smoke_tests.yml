@@ -8,9 +8,9 @@ permissions:
   contents: read
 
 env:
-  BASE: ${{ secrets.FUNC_BASE_URL }}          # e.g. https://<something>.azurewebsites.net
-  CODE: ${{ secrets.FUNC_CODE_DEFAULT }}      # default Function key (no ?code=)
-  RG_OVR: ${{ secrets.AZURE_RESOURCE_GROUP }} # REQUIRED for this variant (exact RG name)
+  BASE: ${{ secrets.FUNC_BASE_URL }}          # e.g. https://<your-app>.azurewebsites.net
+  CODE: ${{ secrets.FUNC_CODE_DEFAULT }}      # default (Function) key, just the key string
+  RG:   ${{ secrets.AZURE_RESOURCE_GROUP }}   # exact Resource Group name from Azure portal
 
 jobs:
   smoke:
@@ -25,15 +25,15 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y jq
+        run: sudo apt-get update && sudo apt-get install -y jq curl
 
-      - name: Detect Function App and function URLs (RG-scoped)
+      - name: Detect Function App and function URLs (RG-scoped, null-safe)
         id: detect
         shell: bash
         env:
           BASE: ${{ env.BASE }}
           CODE: ${{ env.CODE }}
-          RG:   ${{ env.RG_OVR }}
+          RG:   ${{ env.RG }}
         run: |
           set -euo pipefail
           BASE="${BASE:?FUNC_BASE_URL secret is missing}"
@@ -45,23 +45,31 @@ jobs:
           echo "Derived HOST: $HOST"
           echo "Using RG: $RG"
 
-          # Find the app *by* defaultHostName within the provided RG
-          APP=$(az resource list -g "$RG" --resource-type Microsoft.Web/sites \
-                --query "[?properties.defaultHostName=='$HOST'].name | [0]" -o tsv)
-          if [ -z "$APP" ]; then
-            APP=$(az resource list -g "$RG" --resource-type Microsoft.Web/sites \
-                  --query "[?contains(properties.defaultHostName, '$HOST')].name | [0]" -o tsv)
-          fi
-          if [ -z "$APP" ]; then
-            echo "::group::Debug: Sites in RG $RG"
+          # List function apps in the RG and pick the one whose defaultHostName matches HOST
+          # Output format: "<name>\t<defaultHostName>"
+          MAP=$(az functionapp list -g "$RG" --query "[].{name:name,host:defaultHostName}" -o tsv || true)
+          if [ -z "${MAP}" ]; then
+            echo "::group::Debug: No function apps found in RG $RG"
             az resource list -g "$RG" --resource-type Microsoft.Web/sites -o table || true
             echo "::endgroup::"
-            echo "::error::Could not resolve Function App in RG '$RG' for host '$HOST'. Check BASE/RG or add FUNC_APP_NAME."
+            echo "::error::No Function Apps found in resource group '$RG'."
+            exit 1
+          fi
+
+          APP=$(echo "$MAP" | awk -v h="$HOST" '$2==h{print $1; exit}')
+          if [ -z "${APP:-}" ]; then
+            APP=$(echo "$MAP" | awk -v h="$HOST" 'index($2,h){print $1; exit}')
+          fi
+
+          if [ -z "${APP:-}" ]; then
+            echo "::group::Debug: Function Apps in $RG"
+            echo "$MAP" | sed 's/\t/ -> /g' || true
+            echo "::endgroup::"
+            echo "::error::Could not resolve Function App for host '$HOST' in RG '$RG'. Check FUNC_BASE_URL or add FUNC_APP_NAME based workflow."
             exit 1
           fi
 
           echo "Function App: $APP"
-          echo "Resource Group: $RG"
 
           # List functions
           az functionapp function list -g "$RG" -n "$APP" -o json > funcs.json
@@ -147,4 +155,7 @@ jobs:
           }
           JSON
           echo "POST $url"
-          curl -sS -H "Content-Type: application/json" -d @body.json "$url" | jq -r .
+          resp=$(curl -s -S -w "\n%{http_code}" -H "Content-Type: application/json" -d @body.json "$url")
+          body=$(echo "$resp" | head -n -1); code=$(echo "$resp" | tail -n 1)
+          echo "$body" | jq -r .
+          test "$code" -ge 200 -a "$code" -lt 300
