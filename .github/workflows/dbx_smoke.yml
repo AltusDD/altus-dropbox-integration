@@ -1,0 +1,18 @@
+name: Dropbox — Smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check secrets
+        run: |
+          test -n "${{ secrets.DBX_BASE_URL }}" || (echo "Missing DBX_BASE_URL" && exit 1)
+          test -n "${{ secrets.DBX_HOST_KEY }}" || (echo "Missing DBX_HOST_KEY" && exit 1)
+
+      - name: Health
+        run: |
+          set -euo pipefail
+          curl -fsSL "${{ secrets.DBX_BASE_URL }}/api/dbx_health?code=${{ secrets.DBX_HOST_KEY }}"
