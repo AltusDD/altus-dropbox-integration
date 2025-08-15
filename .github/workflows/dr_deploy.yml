@@ -5,32 +5,71 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'functions/**'
-      - 'host.json'
-      - 'requirements.txt'
-      - '.github/workflows/dr_deploy.yml'
+      - "functions/**"
+      - "host.json"
+      - "requirements.txt"
+      - ".github/workflows/dealroom_deploy.yml"
 
 permissions:
   id-token: write
   contents: read
 
+concurrency:
+  group: dealroom-deploy
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      APP_NAME: altus-dealroom-api-func
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Zip package
-        run: zip -r functionapp.zip . -x ".git/*" "*.pyc" "__pycache__/*" ".github/*"
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Zip the function app contents (exclude repo noise)
+      - name: Package app (zip)
+        run: |
+          zip -r functionapp.zip . \
+            -x ".git/*" ".github/*" "*.pyc" "__pycache__/*" ".venv/*" "venv/*"
+
       - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Find the resource group
+
+      # Find the RG for the Function App
+      - name: Resolve resource group
         id: rg
-        run: echo "val=$(az functionapp show -n altus-dealroom-api-func --query resourceGroup -o tsv)" >> "$GITHUB_OUTPUT"
-      - name: Deploy zip to Function App
-        run: az functionapp deployment source config-zip -g "$RG" -n altus-dealroom-api-func --src functionapp.zip
+        shell: bash
+        run: |
+          RG="$(az functionapp show -n "$APP_NAME" --query resourceGroup -o tsv)"
+          echo "val=$RG" >> "$GITHUB_OUTPUT"
+
+      # Ensure remote build is enabled so Oryx builds from requirements.txt on the server
+      - name: Enable remote build flags (once)
+        shell: bash
+        run: |
+          az functionapp config appsettings set \
+            -g "${{ steps.rg.outputs.val }}" -n "$APP_NAME" \
+            --settings SCM_DO_BUILD_DURING_DEPLOYMENT=true ENABLE_ORYX_BUILD=true
+
+      # Deploy the zip to the Function App
+      - name: Deploy Function App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.APP_NAME }}
+          package: functionapp.zip
+          slot-name: production
+
+      # Optional: warmup ping (safe to remove). Provide DR_BASE_URL + DR_HOST_KEY if you want it to run.
+      - name: (Optional) Warmup health check
+        if: ${{ env.DR_BASE_URL != '' && env.DR_HOST_KEY != '' }}
         env:
-          RG: ${{ steps.rg.outputs.val }}
+          DR_BASE_URL: ${{ secrets.DR_BASE_URL }}
+          DR_HOST_KEY: ${{ secrets.DR_HOST_KEY }}
+        run: |
+          curl -fsS -L "${DR_BASE_URL%/}/api/dbx_health?code=${DR_HOST_KEY}" -o /dev/null
