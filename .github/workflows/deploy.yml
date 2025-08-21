@@ -1,4 +1,4 @@
-name: Dropbox — Deploy (OIDC)
+name: Deploy (OIDC)
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ jobs:
       id-token: write
       contents: read
     env:
-      APP_NAME: altus-dropbox-integration
+      ENV_APP_NAME: altus-dropbox-integration   # <-- set per repo
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,11 +25,13 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Package function app
-        run: zip -r functionapp.zip . -x ".git/*" ".github/*"
+        run: |
+          rm -f functionapp.zip
+          zip -r functionapp.zip . -x "*.git*" -x "node_modules/*" -x ".github/*"
 
       - name: Deploy via Functions Action
         uses: azure/functions-action@v1
         with:
-          app-name: ${{ env.APP_NAME }}
+          app-name: ${{ env.ENV_APP_NAME }}
           package: functionapp.zip
           slot-name: production
