@@ -1,0 +1,21 @@
+name: Dropbox — Smoke (non-blocking)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit /api/health
+        run: |
+          if [ -z "${{ secrets.DBX_BASE_URL }}" ]; then
+            echo "::warning::DBX_BASE_URL not set; skipping smoke."
+            exit 0
+          fi
+          URL="${{ secrets.DBX_BASE_URL }}/api/health"
+          if [ -n "${{ secrets.DBX_HOST_KEY }}" ]; then
+            URL="${URL}?code=${{ secrets.DBX_HOST_KEY }}"
+          fi
+          echo "Hitting $URL"
+          curl -fsSL -L "$URL" && echo "health OK" || echo "::warning::health failed (non-blocking)"
