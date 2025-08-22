@@ -1,6 +1,10 @@
+# deploy.yml
+# This workflow vendors dependencies locally and deploys the function app.
+
 name: Deploy (OIDC)
 
 on:
+  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
   push:
     branches: [ main ]
@@ -45,7 +49,10 @@ jobs:
       - name: Package function app
         run: |
           zip -r functionapp.zip . \
-            -x ".git/*" ".github/*" "node_modules/*" "*.pyc" "__pycache__/*"
+            -x "*.git*" \
+            -x ".github/*" \
+            -x "node_modules/*" \
+            -x "__pycache__/*"
 
       # Deploy via Functions Action (Run-From-Package on Linux Consumption)
       - name: Deploy via Functions Action
@@ -54,3 +61,4 @@ jobs:
           app-name: ${{ env.ENV_APP_NAME }}
           package: functionapp.zip
           slot-name: production
+
