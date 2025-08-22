@@ -1,46 +1,49 @@
-# lib/dropbox_client.py (empire-grade)
-import os, dropbox
+import os
+import dropbox
+from dropbox.exceptions import ApiError
 
-class DropboxClient:
-    # Wrapper using OAuth2 refresh for short-lived tokens automatically
-    def __init__(self, app_key: str, app_secret: str, refresh_token: str):
-        self.dbx = dropbox.Dropbox(
-            oauth2_refresh_token=refresh_token,
-            app_key=app_key,
-            app_secret=app_secret,
-            timeout=60
-        )
+# Pull creds from App Settings (Configuration > Application settings)
+APP_KEY = os.environ.get("DROPBOX_APP_KEY")
+APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
+REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
 
-    @classmethod
-    def from_env(cls):
-        key = os.getenv('DROPBOX_APP_KEY')
-        sec = os.getenv('DROPBOX_APP_SECRET')
-        ref = os.getenv('DROPBOX_REFRESH_TOKEN')
-        if not (key and sec and ref):
-            raise RuntimeError('Missing DROPBOX_* envs')
-        return cls(key, sec, ref)
+def get_dbx() -> dropbox.Dropbox:
+    """
+    Returns an authenticated Dropbox client using refresh-token flow.
+    """
+    if not (APP_KEY and APP_SECRET and REFRESH_TOKEN):
+        raise RuntimeError("Missing Dropbox env vars: DROPBOX_APP_KEY/SECRET/REFRESH_TOKEN")
+    return dropbox.Dropbox(
+        app_key=APP_KEY,
+        app_secret=APP_SECRET,
+        oauth2_refresh_token=REFRESH_TOKEN,
+        timeout=30,
+    )
 
-    def create_folder_if_not_exists(self, path: str):
-        try:
-            self.dbx.files_create_folder_v2(path, autorename=False)
-        except dropbox.exceptions.ApiError as e:
-            if 'conflict' in str(e).lower():
-                return
-            raise
+def _normalize_path(path: str) -> str:
+    if not path:
+        return "/"
+    path = path.strip()
+    if not path.startswith("/"):
+        path = "/" + path
+    return path
 
-    def upload_bytes(self, dest_path: str, data: bytes):
-        return self.dbx.files_upload(data, dest_path, mode=dropbox.files.WriteMode('add'), autorename=True, mute=True)
+def ensure_folder(path: str) -> dict:
+    """
+    Ensure a folder exists at `path`. If it doesn't, create it.
+    Returns a small dict with the resulting path.
+    """
+    dbx = get_dbx()
+    target = _normalize_path(path)
 
-    def session_start(self, first_chunk: bytes):
-        res = self.dbx.files_upload_session_start(first_chunk)
-        return res.session_id, len(first_chunk)
-
-    def session_append(self, session_id: str, offset: int, chunk: bytes):
-        cursor = dropbox.files.UploadSessionCursor(session_id=session_id, offset=offset)
-        self.dbx.files_upload_session_append_v2(chunk, cursor)
-        return offset + len(chunk)
-
-    def session_finish(self, session_id: str, offset: int, dest_path: str):
-        cursor = dropbox.files.UploadSessionCursor(session_id=session_id, offset=offset)
-        commit = dropbox.files.CommitInfo(path=dest_path, mode=dropbox.files.WriteMode.overwrite)
-        return self.dbx.files_upload_session_finish(b'', cursor, commit)
+    try:
+        dbx.files_get_metadata(target)
+        # Folder exists
+        return {"ok": True, "path": target, "created": False}
+    except ApiError as e:
+        # If it doesn't exist, create it
+        if (hasattr(e, "error") and hasattr(e.error, "is_path") and e.error.is_path()):
+            dbx.files_create_folder_v2(target, autorename=False)
+            return {"ok": True, "path": target, "created": True}
+        # Different API error – surface it
+        raise
