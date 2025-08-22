@@ -1,5 +1,4 @@
-azure-functions
+azure-functions==1.20.0
 dropbox==11.36.2
 requests>=2.31.0
-
 
