@@ -11,12 +11,15 @@ jobs:
     permissions:
       id-token: write
       contents: read
+
     env:
-      ENV_APP_NAME: altus-dropbox-integration
+      ENV_APP_NAME: altus-dropbox-integration   # <- your Function App name
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Login to Azure with OIDC (uses your repo secrets)
       - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
@@ -24,10 +27,27 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # Install Python 3.11 and vendor dependencies into the app folder
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Vendor Python dependencies for Azure Functions
+        run: |
+          python -m pip install --upgrade pip
+          # Install all deps into the location Azure Functions expects
+          pip install -r requirements.txt -t .python_packages/lib/site-packages
+          # tiny marker so we can verify the step ran
+          echo "deps-installed: $(date -u +"%Y-%m-%dT%H:%M:%SZ")" > .python_packages/INSTALLED.txt
+
+      # Create the deployment zip (exclude CI & local junk only)
       - name: Package function app
         run: |
-          zip -r functionapp.zip . -x "*.git*" -x ".github/*" -x "node_modules/*"
+          zip -r functionapp.zip . \
+            -x ".git/*" ".github/*" "node_modules/*" "*.pyc" "__pycache__/*"
 
+      # Deploy via Functions Action (Run-From-Package on Linux Consumption)
       - name: Deploy via Functions Action
         uses: azure/functions-action@v1
         with:
