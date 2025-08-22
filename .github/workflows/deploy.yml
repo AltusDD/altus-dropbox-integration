@@ -12,7 +12,7 @@ jobs:
       id-token: write
       contents: read
     env:
-      ENV_APP_NAME: altus-dropbox-integration   # <-- set per repo
+      ENV_APP_NAME: altus-dropbox-integration   # ← correct Function App name
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,10 +24,20 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # NEW: build the Python deps into .python_packages/
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies (vendor for Azure Functions)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -t .python_packages/lib/site-packages
+
       - name: Package function app
         run: |
-          rm -f functionapp.zip
-          zip -r functionapp.zip . -x "*.git*" -x "node_modules/*" -x ".github/*"
+          zip -r functionapp.zip . -x "*.git*" -x ".github/*" -x "node_modules/*"
 
       - name: Deploy via Functions Action
         uses: azure/functions-action@v1
